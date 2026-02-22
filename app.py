@@ -1,23 +1,27 @@
+#Web portal backend using Flask. This is a simple implementation to get us started, and will be expanded with more features and better security in the future.
 from flask import Flask, render_template, request, redirect, url_for
 from models import db, User
-
+from models import Experiment
 
 app = Flask(__name__)
 
-# Temporary database (easy for development)
+# Temporary database (for easy development)
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///app.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db.init_app(app)
 
+#Home page
 @app.route("/")
 def home():
     return render_template("home.html")
 
+#Login route
 @app.route("/login", methods=["GET", "POST"])
 def login():
     return render_template("login.html")
 
+#Registration route
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
@@ -25,7 +29,7 @@ def register():
         email = request.form["email"]
         password = request.form["password"]
 
-        # TEMPORARY: store raw password (we'll hash later)
+        # TEMPORARY: store raw password (hash later)
         new_user = User(
             username=username,
             email=email,
@@ -39,7 +43,33 @@ def register():
 
     return render_template("register.html")
 
+#Creating a new experiment route
+@app.route("/experiments/new", methods=["GET", "POST"])
+def create_experiment():
+    if request.method == "POST":
+        name = request.form["name"]
+        start_codon = request.form.get("start_codon")  # returns None if not selected
 
+        experiment = Experiment(
+            user_id=1,  # placeholder
+            name=name,
+            start_codon=start_codon,
+            status="pending",
+            message="Experiment created"
+        )
+
+        db.session.add(experiment)
+        db.session.commit()
+
+        return redirect(url_for("home"))
+
+    return render_template("create_experiment.html")
+
+#Creating a route to list all experiments
+@app.route("/experiments")
+def list_experiments():
+    experiments = Experiment.query.order_by(Experiment.created_at.desc()).all()
+    return render_template("experiments.html", experiments=experiments)
 
 if __name__ == "__main__":
     with app.app_context():

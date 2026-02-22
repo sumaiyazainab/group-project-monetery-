@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2>Experiments</h2>
+
+{% if experiments %}
+<table border="1" cellpadding="8">
+    <tr>
+        <th>Name</th>
+        <th>Status</th>
+        <th>Message</th>
+        <th>Start Codon</th>
+        <th>Created</th>
+    </tr>
+
+    {% for experiment in experiments %}
+    <tr>
+        <td>{{ experiment.name }}</td>
+        <td>{{ experiment.status }}</td>
+        <td>{{ experiment.message or "-" }}</td>
+        <td>{{ experiment.start_codon or "Default" }}</td>
+        <td>{{ experiment.created_at.strftime("%Y-%m-%d %H:%M") }}</td>
+    </tr>
+    {% endfor %}
+</table>
+{% else %}
+<p>No experiments yet.</p>
+{% endif %}
+
+<br>
+<a href="{{ url_for('create_experiment') }}">Create New Experiment</a>
+{% endblock %}

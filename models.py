@@ -3,6 +3,7 @@ from datetime import datetime
 
 db = SQLAlchemy()
 
+#Creating the User Table
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
 
@@ -16,3 +17,24 @@ class User(db.Model):
     def __repr__(self):
         return f"<User {self.username}>"
 
+#Creating the Experiment Table
+class Experiment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+
+    name = db.Column(db.String(100), nullable=False)
+
+    status = db.Column(db.String(20), default='pending')
+    message = db.Column(db.Text, nullable=True)
+
+    best_orf_id = db.Column(db.Integer, nullable=True)
+    best_alignment_score = db.Column(db.Float, nullable=True)
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    start_codon = db.Column(db.String(3), nullable=True)
+
+
+    def __repr__(self):
+        return f"<Experiment {self.id}: {self.name}>"

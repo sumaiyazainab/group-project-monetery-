@@ -25,6 +25,8 @@ class Experiment(db.Model):
 
     name = db.Column(db.String(100), nullable=False)
 
+    uniprot_accession = db.Column(db.String(20), nullable=False)
+
     status = db.Column(db.String(20), default='pending')
     message = db.Column(db.Text, nullable=True)
 

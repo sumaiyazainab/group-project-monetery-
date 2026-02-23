@@ -2,6 +2,7 @@
 from flask import Flask, render_template, request, redirect, url_for
 from models import db, User
 from models import Experiment
+from uniprot_fetch.staging.uniprot_fetch import fetch_uniprot_information
 
 app = Flask(__name__)
 
@@ -50,9 +51,12 @@ def create_experiment():
         name = request.form["name"]
         start_codon = request.form.get("start_codon")  # returns None if not selected
 
+        user = User.query.first()
+
         experiment = Experiment(
-            user_id=1,  # placeholder
+            user_id=user.id,   # TEMP: using current_user.id, but we will implement proper user sessions later
             name=name,
+            uniprot_accession=request.form["uniprot_accession"],
             start_codon=start_codon,
             status="pending",
             message="Experiment created"
@@ -82,16 +86,30 @@ def experiment_detail(experiment_id):
 def run_validation(experiment_id):
     experiment = Experiment.query.get_or_404(experiment_id)
 
-    # TEMPORARY stub (simulate running validation)
-    experiment.status = "running"
-    experiment.message = "Validation started..."
+    try:
+        experiment.status = "running"
+        experiment.message = "Fetching UniProt record..."
+        db.session.commit()
+
+        # TEMP: using experiment.uniprot_accession directly, but we will add error handling and validation later
+        accession_id = experiment.uniprot_accession
+
+        uniprot_record = fetch_uniprot_information(accession_id)
+
+        # If we reach here, UniProt fetch succeeded
+        experiment.status = "completed"
+        experiment.message = "UniProt validation successful"
+
+    except Exception as e:
+        experiment.status = "failed"
+        experiment.message = str(e)
 
     db.session.commit()
-
     return redirect(url_for("experiment_detail", experiment_id=experiment.id))
 
+with app.app_context():
+    db.create_all()
+
 if __name__ == "__main__":
-    with app.app_context():
-        db.create_all()
     app.run(debug=True)
 

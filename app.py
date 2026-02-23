@@ -77,6 +77,18 @@ def experiment_detail(experiment_id):
     experiment = Experiment.query.get_or_404(experiment_id)
     return render_template("experiment_detail.html", experiment=experiment)
 
+#Creating a route to run validation (placeholder for now)
+@app.route("/experiments/<int:experiment_id>/validate", methods=["POST"])
+def run_validation(experiment_id):
+    experiment = Experiment.query.get_or_404(experiment_id)
+
+    # TEMPORARY stub (simulate running validation)
+    experiment.status = "running"
+    experiment.message = "Validation started..."
+
+    db.session.commit()
+
+    return redirect(url_for("experiment_detail", experiment_id=experiment.id))
 
 if __name__ == "__main__":
     with app.app_context():

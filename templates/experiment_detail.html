@@ -13,6 +13,12 @@
 
 <p><em>Pipeline results will appear here.</em></p>
 
+<hr>
+
+<form method="POST" action="{{ url_for('run_validation', experiment_id=experiment.id) }}">
+    <button type="submit">Run UniProt / Plasmid Validation</button>
+</form>
+
 <br>
 <a href="{{ url_for('list_experiments') }}">Back to Experiments</a>
 {% endblock %}

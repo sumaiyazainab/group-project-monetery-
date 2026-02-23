@@ -15,7 +15,11 @@
 
     {% for experiment in experiments %}
     <tr>
-        <td>{{ experiment.name }}</td>
+        <td>
+  <a href="{{ url_for('experiment_detail', experiment_id=experiment.id) }}">
+    {{ experiment.name }}
+  </a>
+</td>
         <td>{{ experiment.status }}</td>
         <td>{{ experiment.message or "-" }}</td>
         <td>{{ experiment.start_codon or "Default" }}</td>

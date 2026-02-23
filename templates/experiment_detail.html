@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2>Experiment Details</h2>
+
+<p><strong>Name:</strong> {{ experiment.name }}</p>
+<p><strong>Status:</strong> {{ experiment.status }}</p>
+<p><strong>Message:</strong> {{ experiment.message or "No message yet" }}</p>
+<p><strong>Start Codon:</strong> {{ experiment.start_codon or "Default" }}</p>
+<p><strong>Created At:</strong> {{ experiment.created_at.strftime("%Y-%m-%d %H:%M") }}</p>
+
+<hr>
+
+<p><em>Pipeline results will appear here.</em></p>
+
+<br>
+<a href="{{ url_for('list_experiments') }}">Back to Experiments</a>
+{% endblock %}

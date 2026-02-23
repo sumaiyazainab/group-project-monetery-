@@ -11,17 +11,17 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db.init_app(app)
 
-#Home page
+#Creating a home page route
 @app.route("/")
 def home():
     return render_template("home.html")
 
-#Login route
+#Creating a user login route
 @app.route("/login", methods=["GET", "POST"])
 def login():
     return render_template("login.html")
 
-#Registration route
+#Creating a user registration route
 @app.route("/register", methods=["GET", "POST"])
 def register():
     if request.method == "POST":
@@ -70,6 +70,13 @@ def create_experiment():
 def list_experiments():
     experiments = Experiment.query.order_by(Experiment.created_at.desc()).all()
     return render_template("experiments.html", experiments=experiments)
+
+#Creating a route to view experiment details
+@app.route("/experiments/<int:experiment_id>")
+def experiment_detail(experiment_id):
+    experiment = Experiment.query.get_or_404(experiment_id)
+    return render_template("experiment_detail.html", experiment=experiment)
+
 
 if __name__ == "__main__":
     with app.app_context():

@@ -1,0 +1,507 @@
+import pandas as pd
+import requests
+
+from Bio import Align
+from Bio.Align import substitution_matrices
+from Bio import SeqIO
+
+# ----------------------------
+# UniProt
+# ----------------------------
+def fetch_uniprot_information(accession_id: str) -> dict:
+    try:
+        r = requests.get(f"https://rest.uniprot.org/uniprotkb/{accession_id}.json", timeout=10)
+        if r.status_code == 200:
+            return r.json()
+        if r.status_code == 404:
+            raise ValueError(f"UniProt accession '{accession_id}' not found (404).")
+        if r.status_code == 400:
+            raise ValueError("Invalid UniProt ID format (400).")
+        if 500 <= r.status_code < 600:
+            raise RuntimeError("UniProt server error (5xx). Try later.")
+        raise RuntimeError(f"Unexpected UniProt response: {r.status_code}")
+    except requests.exceptions.Timeout:
+        raise RuntimeError("UniProt request timed out.")
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Network error contacting UniProt: {e}")
+
+def extract_uniprot_aa_sequence(uniprot_record: dict) -> str:
+    try:
+        return uniprot_record["sequence"]["value"]
+    except (KeyError, TypeError):
+        raise RuntimeError("UniProt record missing sequence.")
+
+# ----------------------------
+# FASTA parsing (WT plasmid file)
+# ----------------------------
+def validate_dna_sequence(sequence: str) -> None:
+    nucleotides = {"A","T","C","G","N"}
+    inv = sorted({c for c in sequence if c not in nucleotides})
+    if inv:
+        raise ValueError(f"Invalid DNA chars: {inv} (allowed A,C,G,T,N).")
+
+def fasta_parsing(fasta_file) -> dict:
+    records = list(SeqIO.parse(fasta_file, "fasta"))
+    if len(records) > 1:
+        raise ValueError("More than one record in FASTA; expected single plasmid.")
+    if len(records) == 0:
+        raise ValueError("No records found in FASTA.")
+    rec = records[0]
+    seq = str(rec.seq).upper()
+    validate_dna_sequence(seq)
+    return {"header": rec.id, "sequence": seq, "length_bp": len(seq)}
+
+# ----------------------------
+# Translation + ORF finding (circular, 6 frames)
+# ----------------------------
+def translate(sequence: str, start_codons: set[str] | None = None) -> str:
+    codon_table = {
+        'ATA':'I','ATC':'I','ATT':'I','ATG':'M',
+        'ACA':'T','ACC':'T','ACG':'T','ACT':'T',
+        'AAC':'N','AAT':'N','AAA':'K','AAG':'K',
+        'AGC':'S','AGT':'S','AGA':'R','AGG':'R',
+        'CTA':'L','CTC':'L','CTG':'L','CTT':'L',
+        'CCA':'P','CCC':'P','CCG':'P','CCT':'P',
+        'CAC':'H','CAT':'H','CAA':'Q','CAG':'Q',
+        'CGA':'R','CGC':'R','CGG':'R','CGT':'R',
+        'GTA':'V','GTC':'V','GTG':'V','GTT':'V',
+        'GCA':'A','GCC':'A','GCG':'A','GCT':'A',
+        'GAC':'D','GAT':'D','GAA':'E','GAG':'E',
+        'GGA':'G','GGC':'G','GGG':'G','GGT':'G',
+        'TCA':'S','TCC':'S','TCG':'S','TCT':'S',
+        'TTC':'F','TTT':'F','TTA':'L','TTG':'L',
+        'TAC':'Y','TAT':'Y','TAA':'*','TAG':'*',
+        'TGC':'C','TGT':'C','TGA':'*','TGG':'W',
+    }
+    if start_codons is None:
+        start_codons = {"ATG","GTG","TTG"}
+
+    aa = ""
+    for i in range(0, len(sequence), 3):
+        codon = sequence[i:i+3]
+        if len(codon) < 3:
+            break
+        if i == 0 and codon in start_codons:
+            aa += "M"
+        else:
+            aa += codon_table.get(codon, "X")
+    return aa
+
+def candidate_orf(plasmid_dict: dict, start_codons: set[str] | None = None) -> list[dict]:
+    seq = plasmid_dict["sequence"]
+    seq = seq.upper()
+    validate_dna_sequence(seq)
+
+    circular_seq = seq + seq
+    L = len(seq)
+
+    if start_codons is None:
+        start_codons = {"ATG","GTG","TTG"}
+    stop_codons = {"TAA","TAG","TGA"}
+    min_aa_len = 50
+
+    orfs = []
+
+    # forward
+    for i in range(3):
+        frame_seq = circular_seq[i:]
+        for x in range(0, len(frame_seq)-2, 3):
+            if frame_seq[x:x+3] in start_codons:
+                orf_nt = ""
+                for y in range(x, len(frame_seq)-2, 3):
+                    cod = frame_seq[y:y+3]
+                    orf_nt += cod
+                    if cod in stop_codons:
+                        start_coord = i + x
+                        stop_coord = i + y + 3
+                        length_nt = len(orf_nt)
+                        if start_coord < L and length_nt <= L:
+                            wraps_origin = stop_coord > L
+                            orf_aa = translate(orf_nt, start_codons=start_codons).rstrip("*")
+                            if len(orf_aa) >= min_aa_len:
+                                orfs.append({
+                                    "strand": "+",
+                                    "frame": f"f{i+1}",
+                                    "start_nt": start_coord,
+                                    "end_nt": stop_coord,
+                                    "wraps_origin": wraps_origin,
+                                    "length_nt": length_nt,
+                                    "orf_nt": orf_nt,
+                                    "length_aa": len(orf_aa),
+                                    "orf_aa": orf_aa
+                                })
+                        break
+
+    # reverse complement of circular
+    comp = {'A':'T','T':'A','G':'C','C':'G','N':'N'}
+    rc = "".join(comp[b] for b in reversed(circular_seq))
+
+    for i in range(3):
+        frame_seq = rc[i:]
+        for x in range(0, len(frame_seq)-2, 3):
+            if frame_seq[x:x+3] in start_codons:
+                orf_nt = ""
+                for y in range(x, len(frame_seq)-2, 3):
+                    cod = frame_seq[y:y+3]
+                    orf_nt += cod
+                    if cod in stop_codons:
+                        start_rev = i + x
+                        stop_rev = i + y + 3
+                        length_nt = len(orf_nt)
+                        if start_rev < L and length_nt <= L:
+                            start_pos = start_rev % L
+                            stop_pos = stop_rev % L
+                            start_coord = (L - stop_pos) % L
+                            stop_coord  = (L - start_pos) % L
+                            wraps_origin = stop_coord <= start_coord
+                            orf_aa = translate(orf_nt, start_codons=start_codons).rstrip("*")
+                            if len(orf_aa) >= min_aa_len:
+                                orfs.append({
+                                    "strand": "-",
+                                    "frame": f"r{i+1}",
+                                    "start_nt": start_coord,
+                                    "end_nt": stop_coord,
+                                    "wraps_origin": wraps_origin,
+                                    "length_nt": length_nt,
+                                    "orf_nt": orf_nt,
+                                    "length_aa": len(orf_aa),
+                                    "orf_aa": orf_aa
+                                })
+                        break
+
+    return orfs
+
+# ----------------------------
+# Alignment-based ORF selection
+# ----------------------------
+def length_compatibility(orf_aa_len: int, uniprot_len: int) -> bool:
+    if uniprot_len <= 0:
+        return False
+    return int(0.8*uniprot_len) <= orf_aa_len <= int(1.2*uniprot_len)
+
+def filter_orf_length(orfs: list[dict], uniprot_protein_seq: str) -> list[dict]:
+    ul = len(uniprot_protein_seq)
+    out = []
+    for o in orfs:
+        laa = o.get("length_aa")
+        if laa is None:
+            continue
+        if length_compatibility(laa, ul):
+            out.append(o)
+    return out
+
+def make_protein_aligner_blosum62() -> Align.PairwiseAligner:
+    aligner = Align.PairwiseAligner()
+    aligner.mode = "global"
+    aligner.substitution_matrix = substitution_matrices.load("BLOSUM62")
+    aligner.open_gap_score = -10
+    aligner.extend_gap_score = -0.5
+    return aligner
+
+def seq_alignment_score(aligner, uniprot_aa: str, orf_aa: str) -> float:
+    return aligner.score(uniprot_aa, orf_aa)
+
+def select_best_orf_by_alignment(orfs: list[dict], uniprot_protein_seq: str, score_fraction_threshold=0.85) -> dict:
+    if not uniprot_protein_seq or not isinstance(uniprot_protein_seq, str):
+        return {"status":"no_match_found","message":"UniProt protein sequence missing/invalid."}
+    if not orfs:
+        return {"status":"no_orfs_found","message":"No ORFs found."}
+
+    filtered = filter_orf_length(orfs, uniprot_protein_seq)
+    if not filtered:
+        filtered = orfs
+
+    aligner = make_protein_aligner_blosum62()
+    best_orf = None
+    best_score = float("-inf")
+
+    for o in filtered:
+        aa = o.get("orf_aa")
+        if not aa:
+            continue
+        sc = seq_alignment_score(aligner, uniprot_protein_seq, aa)
+        if sc > best_score:
+            best_score = sc
+            best_orf = o
+
+    if best_orf is None:
+        return {"status":"no_match_found","message":"ORFs found but none alignable."}
+
+    max_score = seq_alignment_score(aligner, uniprot_protein_seq, uniprot_protein_seq)
+    if max_score <= 0:
+        return {"status":"no_match_found","message":"Invalid UniProt self-alignment score."}
+
+    frac = best_score / max_score
+    res = best_orf.copy()
+    res.update({
+        "alignment_score": best_score,
+        "score_fraction": frac,
+        "filtered_orf_count": len(filtered),
+        "total_orf_count": len(orfs),
+    })
+
+    if frac >= score_fraction_threshold:
+        res["status"] = "match_found"
+    else:
+        res["status"] = "no_match_found"
+        res["message"] = "Best ORF does not meet similarity threshold."
+
+    return res
+import numpy as np
+import matplotlib.pyplot as plt
+
+ESSENTIAL_FIELDS = [
+    "Plasmid_Variant_Index",
+    "Parent_Plasmid_Variant",
+    "Directed_Evolution_Generation",
+    "Assembled_DNA_Sequence",
+    "DNA_Quantification_fg",
+    "Protein_Quantification_pg",
+]
+
+def load_tsv_or_json(path: str) -> pd.DataFrame:
+    if path.endswith(".tsv"):
+        return pd.read_csv(path, sep="\t")
+    if path.endswith(".json"):
+        return pd.read_json(path)
+    raise ValueError("Unsupported file format (need .tsv or .json)")
+
+def qc_drop_incomplete_rows(df: pd.DataFrame):
+    missing = [c for c in ESSENTIAL_FIELDS if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing essential columns: {missing}")
+    clean = df.dropna(subset=ESSENTIAL_FIELDS).copy()
+    rejected = df.loc[~df.index.isin(clean.index)].copy()
+    return clean, rejected
+
+def codonize(nt: str):
+    nt = str(nt).upper().replace(" ", "").replace("\n","").replace("\r","")
+    L = (len(nt)//3)*3
+    nt = nt[:L]
+    return [nt[i:i+3] for i in range(0, len(nt), 3)]
+
+def classify_codon_mutations(wt_orf_nt: str, var_orf_nt: str):
+    wt_cod = codonize(wt_orf_nt)
+    va_cod = codonize(var_orf_nt)
+    n = min(len(wt_cod), len(va_cod))
+
+    muts = []
+    syn = 0
+    nonsyn = 0
+
+    for i in range(n):
+        wc = wt_cod[i]
+        vc = va_cod[i]
+        if wc == vc:
+            continue
+
+        wt_aa = translate(wc).replace("*","")
+        va_aa = translate(vc).replace("*","")
+        aa_pos = i + 1
+
+        if wt_aa == va_aa:
+            syn += 1
+            mtype = "synonymous"
+        else:
+            nonsyn += 1
+            mtype = "nonsynonymous"
+
+        muts.append({
+            "aa_position": aa_pos,
+            "wt_codon": wc,
+            "var_codon": vc,
+            "wt_aa": wt_aa,
+            "var_aa": va_aa,
+            "mutation_type": mtype,
+        })
+
+    if len(wt_cod) != len(va_cod):
+        muts.append({
+            "aa_position": None,
+            "wt_codon": None,
+            "var_codon": None,
+            "wt_aa": None,
+            "var_aa": None,
+            "mutation_type": "length_mismatch_indel_or_truncation",
+            "note": f"WT_codons={len(wt_cod)} VAR_codons={len(va_cod)}",
+        })
+
+    return muts, syn, nonsyn
+
+def compute_activity_score(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out["DNA_over_Protein"] = out["DNA_Quantification_fg"] / out["Protein_Quantification_pg"]
+
+    # define controls:
+    if "Control" in out.columns:
+        ctrl = out["Control"] == True
+    else:
+        # common fallback: WT control rows indexed as 0
+        ctrl = out["Plasmid_Variant_Index"] == 0
+
+    per_gen_ctrl = (
+        out.loc[ctrl]
+          .groupby("Directed_Evolution_Generation")["DNA_over_Protein"]
+          .mean()
+          .rename("Control_Ratio_Gen")
+    )
+    global_ctrl = out.loc[ctrl, "DNA_over_Protein"].mean()
+
+    out = out.merge(per_gen_ctrl, how="left",
+                    left_on="Directed_Evolution_Generation", right_index=True)
+
+    out["Control_Ratio_Gen"] = out["Control_Ratio_Gen"].fillna(global_ctrl)
+    out["Activity_Score"] = out["DNA_over_Protein"] / out["Control_Ratio_Gen"]
+    return out
+
+def run_analysis(clean_df: pd.DataFrame, uniprot_aa: str, score_fraction_threshold=0.85):
+    df = clean_df.copy()
+
+    # pick a WT row to define WT ORF (prefer Control==True)
+    if "Control" in df.columns and (df["Control"] == True).any():
+        wt_row = df.loc[df["Control"] == True].sort_values("Directed_Evolution_Generation").iloc[0]
+    else:
+        wt_row = df.sort_values(["Directed_Evolution_Generation","Plasmid_Variant_Index"]).iloc[0]
+
+    wt_seq = wt_row["Assembled_DNA_Sequence"]
+    wt_orfs = candidate_orf({"sequence": wt_seq, "header":"wt", "length_bp":len(wt_seq)})
+    wt_best = select_best_orf_by_alignment(wt_orfs, uniprot_aa, score_fraction_threshold=score_fraction_threshold)
+    if wt_best.get("status") != "match_found":
+        raise ValueError(f"WT gene not confidently found. {wt_best.get('message','')}")
+
+    wt_orf_nt = wt_best["orf_nt"]
+
+    # columns to add
+    df["Protein_Sequence"] = None
+    df["Synonymous_Mutations"] = np.nan
+    df["Nonsynonymous_Mutations"] = np.nan
+    df["Total_Mutations"] = np.nan
+    df["Gene_Score_Fraction"] = np.nan
+
+    mutation_rows = []
+
+    for i, row in df.iterrows():
+        seq = row["Assembled_DNA_Sequence"]
+        orfs = candidate_orf({"sequence": seq, "header":"var", "length_bp":len(seq)})
+        best = select_best_orf_by_alignment(orfs, uniprot_aa, score_fraction_threshold=score_fraction_threshold)
+
+        if best.get("status") != "match_found":
+            # keep row but mark as failed gene-call
+            continue
+
+        df.at[i, "Protein_Sequence"] = best["orf_aa"]
+        df.at[i, "Gene_Score_Fraction"] = best["score_fraction"]
+
+        muts, syn, nonsyn = classify_codon_mutations(wt_orf_nt, best["orf_nt"])
+        df.at[i, "Synonymous_Mutations"] = syn
+        df.at[i, "Nonsynonymous_Mutations"] = nonsyn
+        df.at[i, "Total_Mutations"] = syn + nonsyn
+
+        for m in muts:
+            mutation_rows.append({
+                "Plasmid_Variant_Index": row["Plasmid_Variant_Index"],
+                "Directed_Evolution_Generation": row["Directed_Evolution_Generation"],
+                "Parent_Plasmid_Variant": row["Parent_Plasmid_Variant"],
+                **m
+            })
+
+    mutations_df = pd.DataFrame(mutation_rows)
+
+    # activity score
+    df = compute_activity_score(df)
+
+    # Top 10
+    top10 = (
+        df.dropna(subset=["Activity_Score"])
+          .sort_values("Activity_Score", ascending=False)
+          .head(10)
+          .loc[:, ESSENTIAL_FIELDS + ["Activity_Score","Total_Mutations"]]
+          .reset_index(drop=True)
+    )
+
+    return df, mutations_df, top10
+
+def plot_activity_by_generation(enriched_df: pd.DataFrame):
+    d = enriched_df.dropna(subset=["Activity_Score"]).copy()
+    gens = sorted(d["Directed_Evolution_Generation"].unique())
+    data = [d.loc[d["Directed_Evolution_Generation"]==g, "Activity_Score"].values for g in gens]
+
+    plt.figure()
+    plt.boxplot(data, labels=[str(g) for g in gens], showfliers=False)
+    plt.xlabel("Directed Evolution Generation")
+    plt.ylabel("Activity Score (normalised DNA/Protein)")
+    plt.title("Activity Score Distribution per Generation")
+    plt.tight_layout()
+    plt.show()
+DATA_PATH = "DE_BSU_Pol_Batch_1.tsv"
+# or
+# DATA_PATH = "DE_BSU_Pol_Batch_1.json"
+
+df_raw = load_tsv_or_json(DATA_PATH)
+clean_df, rejected_df = qc_drop_incomplete_rows(df_raw)
+
+df_raw.head()
+      uniprot = fetch_uniprot_information("O34996")
+uniprot_aa = extract_uniprot_aa_sequence(uniprot)
+
+enriched_df, mutations_df, top10_df = run_analysis(clean_df, uniprot_aa)
+
+top10_df
+      import numpy as np
+import matplotlib.pyplot as plt
+
+def plot_activity_violin_like_example(enriched_df, score_col="Activity_Score", gen_col="Directed_Evolution_Generation",
+                                      save_path=None):
+    # drop missing scores
+    df = enriched_df.dropna(subset=[score_col]).copy()
+
+    # ensure generations sorted
+    gens = sorted(df[gen_col].unique())
+    data = [df.loc[df[gen_col] == g, score_col].values for g in gens]
+
+    fig, ax = plt.subplots(figsize=(9, 6))
+
+    # 1) Violin shapes
+    vp = ax.violinplot(
+        data,
+        positions=np.arange(1, len(gens) + 1),
+        widths=0.75,
+        showmeans=False,
+        showmedians=False,
+        showextrema=False
+    )
+
+    # make violin semi-transparent like the example
+    for body in vp["bodies"]:
+        body.set_alpha(0.35)
+
+    # 2) Boxplot overlay (gives whiskers + median)
+    ax.boxplot(
+        data,
+        positions=np.arange(1, len(gens) + 1),
+        widths=0.18,
+        patch_artist=True,
+        showfliers=False
+    )
+
+    # 3) Add mean marker (like the little bar/cross in the example)
+    means = [np.mean(d) if len(d) else np.nan for d in data]
+    ax.plot(np.arange(1, len(gens) + 1), means, marker="_", linestyle="None", markersize=18)
+
+    # Labels + title to match example
+    ax.set_title("Activity Score Distribution by Generation")
+    ax.set_xlabel("Generation")
+    ax.set_ylabel("Activity Score")
+
+    ax.set_xticks(np.arange(1, len(gens) + 1))
+    ax.set_xticklabels([str(g) for g in gens])
+
+    ax.grid(True, axis="y", alpha=0.3)
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=300)
+        print("Saved:", save_path)
+
+    plt.show()
+      plot_activity_violin_like_example(enriched_df)

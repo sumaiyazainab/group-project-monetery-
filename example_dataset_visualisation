@@ -1,0 +1,476 @@
+import json
+import math
+from pathlib import Path
+from typing import Dict, Tuple, Optional, List
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+
+from sklearn.decomposition import PCA
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.neighbors import KNeighborsRegressor
+
+
+DNA_COMP = str.maketrans("ACGTacgt", "TGCAtgca")
+
+def revcomp(seq: str) -> str:
+    return seq.translate(DNA_COMP)[::-1]
+
+STOP_CODONS = {"TAA", "TAG", "TGA"}
+
+CODON_TABLE = {
+    # Standard genetic code (bacterial also uses standard for translation)
+    "TTT":"F","TTC":"F","TTA":"L","TTG":"L",
+    "TCT":"S","TCC":"S","TCA":"S","TCG":"S",
+    "TAT":"Y","TAC":"Y","TAA":"*","TAG":"*",
+    "TGT":"C","TGC":"C","TGA":"*","TGG":"W",
+    "CTT":"L","CTC":"L","CTA":"L","CTG":"L",
+    "CCT":"P","CCC":"P","CCA":"P","CCG":"P",
+    "CAT":"H","CAC":"H","CAA":"Q","CAG":"Q",
+    "CGT":"R","CGC":"R","CGA":"R","CGG":"R",
+    "ATT":"I","ATC":"I","ATA":"I","ATG":"M",
+    "ACT":"T","ACC":"T","ACA":"T","ACG":"T",
+    "AAT":"N","AAC":"N","AAA":"K","AAG":"K",
+    "AGT":"S","AGC":"S","AGA":"R","AGG":"R",
+    "GTT":"V","GTC":"V","GTA":"V","GTG":"V",
+    "GCT":"A","GCC":"A","GCA":"A","GCG":"A",
+    "GAT":"D","GAC":"D","GAA":"E","GAG":"E",
+    "GGT":"G","GGC":"G","GGA":"G","GGG":"G",
+}
+
+def translate_dna(seq: str) -> str:
+    """Translate a coding DNA sequence (assumes frame is correct). Stops at first stop codon."""
+    aa = []
+    for i in range(0, len(seq) - 2, 3):
+        codon = seq[i:i+3].upper()
+        aa1 = CODON_TABLE.get(codon, "X")
+        if aa1 == "*":
+            break
+        aa.append(aa1)
+    return "".join(aa)
+
+
+def load_de_dataset(path: str) -> pd.DataFrame:
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Not found: {path}")
+
+    if p.suffix.lower() == ".tsv":
+        df = pd.read_csv(p, sep="\t")
+    elif p.suffix.lower() == ".json":
+        with open(p, "r") as f:
+            data = json.load(f)
+        df = pd.DataFrame(data)
+    else:
+        raise ValueError("Please provide a .tsv or .json dataset file.")
+
+    # Basic cleanup / types
+    df["Directed_Evolution_Generation"] = pd.to_numeric(df["Directed_Evolution_Generation"], errors="coerce").astype("Int64")
+    df["Plasmid_Variant_Index"] = pd.to_numeric(df["Plasmid_Variant_Index"], errors="coerce").astype("Int64")
+    df["Parent_Plasmid_Variant"] = pd.to_numeric(df["Parent_Plasmid_Variant"], errors="coerce").astype("Int64")
+    df["DNA_Quantification_fg"] = pd.to_numeric(df["DNA_Quantification_fg"], errors="coerce")
+    df["Protein_Quantification_pg"] = pd.to_numeric(df["Protein_Quantification_pg"], errors="coerce")
+
+    # Ensure Control exists
+    if "Control" not in df.columns:
+        df["Control"] = False
+
+    # Drop rows missing essential fields (QC-lite)
+    essential = ["Plasmid_Variant_Index", "Directed_Evolution_Generation", "Assembled_DNA_Sequence",
+                 "DNA_Quantification_fg", "Protein_Quantification_pg"]
+    df = df.dropna(subset=essential).copy()
+
+    # Normalise sequences (uppercase, remove whitespace)
+    df["Assembled_DNA_Sequence"] = df["Assembled_DNA_Sequence"].astype(str).str.replace(r"\s+", "", regex=True).str.upper()
+
+    return df
+
+
+df = load_de_dataset("DE_BSU_Pol_Batch_1.tsv")
+# df = load_de_dataset("DE_BSU_Pol_Batch_1.json")
+
+df.head()
+
+
+def compute_activity_score(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+
+    # Avoid divide by zero
+    out["raw_eff"] = out["DNA_Quantification_fg"] / out["Protein_Quantification_pg"].replace(0, np.nan)
+
+    # WT baseline per generation (median for robustness)
+    wt = out[out["Control"] == True].copy()
+    if wt.empty:
+        raise ValueError("No Control==True rows found. Need WT controls to normalise per generation.")
+
+    wt_baseline = (
+        wt.groupby("Directed_Evolution_Generation")["raw_eff"]
+        .median()
+        .rename("wt_raw_eff_median")
+        .to_frame()
+    )
+
+    out = out.merge(wt_baseline, left_on="Directed_Evolution_Generation", right_index=True, how="left")
+
+    # If a generation has no control rows, fall back to generation 0 if present, else overall control median
+    fallback0 = wt_baseline["wt_raw_eff_median"].get(0, float(wt["raw_eff"].median()))
+    out["wt_raw_eff_median"] = out["wt_raw_eff_median"].fillna(fallback0)
+
+    out["Activity_Score"] = out["raw_eff"] / out["wt_raw_eff_median"]
+
+    return out
+
+df_scored = compute_activity_score(df)
+df_scored[["Plasmid_Variant_Index","Directed_Evolution_Generation","Control","DNA_Quantification_fg","Protein_Quantification_pg","Activity_Score"]].head(10)
+
+
+def read_fasta_single(path: str) -> str:
+    seq_lines = []
+    with open(path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith(">"):
+                continue
+            seq_lines.append(line)
+    seq = "".join(seq_lines).replace(" ", "").replace("\t", "").upper()
+    if not seq:
+        raise ValueError("FASTA appears empty.")
+    return seq
+
+wt_plasmid = read_fasta_single("pET-28a_BSU_DNA_Pol_I_WT.fa")
+len(wt_plasmid)
+
+
+def find_orfs_circular(seq: str,
+                      min_len_bp: int = 2000,
+                      max_len_bp: int = 4500) -> List[Dict]:
+    """
+    Find ORFs in a circular DNA sequence by scanning a doubled sequence,
+    then mapping coordinates back to original.
+    """
+    n = len(seq)
+    seq2 = seq + seq
+    results = []
+
+    def scan_strand(s: str, strand: str):
+        for frame in range(3):
+            i = frame
+            while i < 2*n - 2:
+                codon = s[i:i+3]
+                if codon == "ATG":
+                    # extend until stop or length exceeds max
+                    j = i
+                    while j < 2*n - 2:
+                        cod = s[j:j+3]
+                        if cod in STOP_CODONS:
+                            orf_len = (j + 3) - i
+                            if min_len_bp <= orf_len <= max_len_bp:
+                                start = i
+                                end = j + 3  # exclusive
+                                # only accept ORFs that start in first n region
+                                if start < n:
+                                    results.append({
+                                        "strand": strand,
+                                        "frame": frame,
+                                        "start": start,  # in doubled coords
+                                        "end": end,      # in doubled coords
+                                        "len_bp": orf_len
+                                    })
+                            break
+                        if (j - i) > max_len_bp:
+                            break
+                        j += 3
+                    i = j + 3
+                else:
+                    i += 3
+
+    scan_strand(seq2, "+")
+    scan_strand(revcomp(seq2), "-")
+    return results
+
+def pick_best_orf(seq: str) -> Dict:
+    orfs = find_orfs_circular(seq)
+    if not orfs:
+        raise ValueError("No ORFs found in expected size range. Try adjusting min_len_bp/max_len_bp.")
+    # choose the longest ORF (typical for polymerase gene)
+    best = sorted(orfs, key=lambda x: x["len_bp"], reverse=True)[0]
+    return best
+
+wt_orf = pick_best_orf(wt_plasmid)
+wt_orf
+
+
+def extract_circular_region(seq: str, start: int, end: int) -> str:
+    """Extract from a doubled-coordinate [start:end) where start< len(seq) and end can exceed len(seq)."""
+    n = len(seq)
+    if end <= n:
+        return seq[start:end]
+    else:
+        return seq[start:] + seq[:(end - n)]
+
+def get_wt_cds_and_protein(wt_seq: str, orf: Dict) -> Tuple[str, str]:
+    n = len(wt_seq)
+    if orf["strand"] == "+":
+        cds = extract_circular_region(wt_seq, orf["start"], orf["end"])
+    else:
+        # ORF coords were found on revcomp(seq2), need map back:
+        # For simplicity: build full revcomp of original circular sequence, then extract there.
+        rc = revcomp(wt_seq)
+        cds_rc = extract_circular_region(rc, orf["start"], orf["end"])
+        cds = revcomp(cds_rc)  # convert back to coding orientation (5'->3' on + sense)
+    aa = translate_dna(cds)
+    return cds, aa
+
+wt_cds, wt_aa = get_wt_cds_and_protein(wt_plasmid, wt_orf)
+len(wt_cds), len(wt_aa)
+
+
+def find_rotation_offset(wt_seq: str, var_seq: str, k: int = 60, max_tries: int = 200) -> Optional[int]:
+    """
+    Find offset such that rotating var_seq by that offset matches wt_seq orientation.
+    Returns offset where var_rot = var_seq[offset:] + var_seq[:offset].
+    """
+    n = len(wt_seq)
+    if len(var_seq) != n:
+        # If lengths differ, rotation is harder; you can still attempt but identity will drop.
+        # For now, require same length (typical here).
+        return None
+
+    # Try multiple anchors from WT to avoid anchor spanning a mutation
+    step = max(1, (n - k) // max_tries)
+    for start in range(0, min(n - k, step * max_tries), step):
+        anchor = wt_seq[start:start+k]
+        idx = var_seq.find(anchor)
+        if idx != -1:
+            # anchor at wt start corresponds to var idx; want var_rot[ start:start+k ] == anchor
+            # If we rotate by (idx - start), then var_rot[start] = var[idx]
+            offset = (idx - start) % n
+            return offset
+    return None
+
+def rotate(seq: str, offset: int) -> str:
+    n = len(seq)
+    offset = offset % n
+    return seq[offset:] + seq[:offset]
+
+def best_oriented_variant(wt_seq: str, var_seq: str, k: int = 60) -> Tuple[str, str]:
+    """
+    Return (var_rotated, orientation) where orientation is '+' or '-'.
+    Chooses between forward and reverse-complement based on which can be rotated to match WT.
+    """
+    # Try forward
+    off_f = find_rotation_offset(wt_seq, var_seq, k=k)
+    if off_f is not None:
+        return rotate(var_seq, off_f), "+"
+
+    # Try reverse complement
+    var_rc = revcomp(var_seq)
+    off_r = find_rotation_offset(wt_seq, var_rc, k=k)
+    if off_r is not None:
+        return rotate(var_rc, off_r), "-"
+
+    # If no anchor found, return as-is (still usable for crude counts, but less reliable)
+    return var_seq, "?"
+
+def count_mutations_in_cds(wt_plasmid_seq: str,
+                           var_plasmid_seq: str,
+                           wt_orf_info: Dict,
+                           wt_cds_seq: str,
+                           wt_aa_seq: str) -> Tuple[int, int]:
+    """
+    Returns (nt_mutations_in_cds, aa_mutations).
+    """
+    var_oriented, orient = best_oriented_variant(wt_plasmid_seq, var_plasmid_seq)
+
+    # Extract CDS from oriented variant using the same coordinates and strand logic as WT ORF.
+    if wt_orf_info["strand"] == "+":
+        var_cds = extract_circular_region(var_oriented, wt_orf_info["start"], wt_orf_info["end"])
+    else:
+        # If WT gene is on '-', we should extract from reverse-complement reference.
+        # Here we replicate the WT extraction logic:
+        rc_var = revcomp(var_oriented)
+        cds_rc = extract_circular_region(rc_var, wt_orf_info["start"], wt_orf_info["end"])
+        var_cds = revcomp(cds_rc)
+
+    # NT mutation count (simple Hamming distance)
+    nt_mut = sum(1 for a, b in zip(wt_cds_seq, var_cds) if a != b)
+
+    # AA mutation count (translate both, compare positions)
+    var_aa = translate_dna(var_cds)
+    L = min(len(wt_aa_seq), len(var_aa))
+    aa_mut = sum(1 for i in range(L) if wt_aa_seq[i] != var_aa[i]) + abs(len(wt_aa_seq) - len(var_aa))
+
+    return nt_mut, aa_mut
+
+
+
+def add_mutation_counts(df: pd.DataFrame,
+                        wt_plasmid_seq: str,
+                        wt_orf_info: Dict) -> pd.DataFrame:
+    wt_cds_seq, wt_aa_seq = get_wt_cds_and_protein(wt_plasmid_seq, wt_orf_info)
+
+    nt_list = []
+    aa_list = []
+
+    for seq in df["Assembled_DNA_Sequence"].tolist():
+        nt_mut, aa_mut = count_mutations_in_cds(
+            wt_plasmid_seq=wt_plasmid_seq,
+            var_plasmid_seq=seq,
+            wt_orf_info=wt_orf_info,
+            wt_cds_seq=wt_cds_seq,
+            wt_aa_seq=wt_aa_seq
+        )
+        nt_list.append(nt_mut)
+        aa_list.append(aa_mut)
+
+    out = df.copy()
+    out["NT_Mutations_vs_WT_in_Gene"] = nt_list
+    out["AA_Mutations_vs_WT"] = aa_list
+    return out
+
+df_scored_mut = add_mutation_counts(df_scored, wt_plasmid, wt_orf)
+df_scored_mut[["Plasmid_Variant_Index","Directed_Evolution_Generation","Control","Activity_Score","NT_Mutations_vs_WT_in_Gene","AA_Mutations_vs_WT"]].head(10)
+
+
+ESSENTIAL_FIELDS = [
+    "Plasmid_Variant_Index",
+    "Parent_Plasmid_Variant",
+    "Directed_Evolution_Generation",
+    "DNA_Quantification_fg",
+    "Protein_Quantification_pg",
+]
+
+def top_performers_table(df: pd.DataFrame, n: int = 10) -> pd.DataFrame:
+    # Exclude controls from the "top variants" list
+    candidates = df[df["Control"] == False].copy()
+
+    # Sort by Activity Score descending
+    candidates = candidates.sort_values("Activity_Score", ascending=False)
+
+    cols = ESSENTIAL_FIELDS + [
+        "Activity_Score",
+        "NT_Mutations_vs_WT_in_Gene",
+        "AA_Mutations_vs_WT",
+    ]
+    top = candidates[cols].head(n).reset_index(drop=True)
+
+    # nicer formatting
+    top["Activity_Score"] = top["Activity_Score"].astype(float).round(4)
+    return top
+
+top10 = top_performers_table(df_scored_mut, n=10)
+top10
+
+
+def plot_activity_distribution(df: pd.DataFrame):
+    # only non-control or include all? Usually show all variants (including controls can compress scale)
+    plot_df = df[df["Control"] == False].copy()
+
+    gens = sorted(plot_df["Directed_Evolution_Generation"].dropna().unique().tolist())
+    data = [plot_df.loc[plot_df["Directed_Evolution_Generation"] == g, "Activity_Score"].dropna().values for g in gens]
+
+    plt.figure(figsize=(10, 5))
+    plt.violinplot(data, showmeans=True, showmedians=True)
+    plt.xticks(np.arange(1, len(gens) + 1), [str(g) for g in gens])
+    plt.xlabel("Generation")
+    plt.ylabel("WT-normalised Activity Score")
+    plt.title("Activity Score Distribution by Generation")
+    plt.grid(True, alpha=0.3)
+    plt.show()
+
+plot_activity_distribution(df_scored_mut)
+
+
+
+ef variant_protein_sequence(wt_plasmid_seq: str, wt_orf_info: dict, var_plasmid_seq: str) -> str:
+    var_oriented, _ = best_oriented_variant(wt_plasmid_seq, var_plasmid_seq, k=60)
+
+    if wt_orf_info["strand"] == "+":
+        var_cds = extract_circular_region(var_oriented, wt_orf_info["start"], wt_orf_info["end"])
+    else:
+        rc_var = revcomp(var_oriented)
+        cds_rc = extract_circular_region(rc_var, wt_orf_info["start"], wt_orf_info["end"])
+        var_cds = revcomp(cds_rc)
+
+    return translate_dna(var_cds)
+
+# Add protein sequences (may take a bit depending on dataset size)
+df_land = df_scored_mut.copy()
+df_land["Protein_Seq"] = df_land["Assembled_DNA_Sequence"].apply(
+    lambda s: variant_protein_sequence(wt_plasmid, wt_orf, s)
+)
+
+# Keep only non-control variants (optional, but usually best for landscape)
+df_land = df_land[df_land["Control"] == False].dropna(subset=["Protein_Seq", "Activity_Score"]).copy()
+df_land[["Plasmid_Variant_Index", "Directed_Evolution_Generation", "Activity_Score"]].head()
+
+# k-mer vectorisation for protein sequences
+k = 3
+vectorizer = CountVectorizer(analyzer="char", ngram_range=(k, k))
+X = vectorizer.fit_transform(df_land["Protein_Seq"])
+
+# Dimensionality reduction to 2D (PCA is fast + deterministic)
+pca = PCA(n_components=2, random_state=42)
+coords_2d = pca.fit_transform(X.toarray())
+
+df_land["Dim1"] = coords_2d[:, 0]
+df_land["Dim2"] = coords_2d[:, 1]
+
+# Training data
+xy = df_land[["Dim1", "Dim2"]].values
+z = df_land["Activity_Score"].values
+
+# Grid over the 2D space
+grid_size = 70  # increase to 100 for smoother surface (slower)
+x_lin = np.linspace(df_land["Dim1"].min(), df_land["Dim1"].max(), grid_size)
+y_lin = np.linspace(df_land["Dim2"].min(), df_land["Dim2"].max(), grid_size)
+xx, yy = np.meshgrid(x_lin, y_lin)
+grid_xy = np.c_[xx.ravel(), yy.ravel()]
+
+# KNN regression to predict activity over the grid
+knn = KNeighborsRegressor(n_neighbors=20, weights="distance")
+knn.fit(xy, z)
+zz = knn.predict(grid_xy).reshape(grid_size, grid_size)
+
+fig = go.Figure()
+
+# Surface (topography)
+fig.add_trace(go.Surface(
+    x=xx, y=yy, z=zz,
+    surfacecolor=zz,   # color by activity
+    opacity=0.95,
+    colorbar=dict(title="Activity Score")
+))
+
+# Points (actual variants)
+fig.add_trace(go.Scatter3d(
+    x=df_land["Dim1"], y=df_land["Dim2"], z=df_land["Activity_Score"],
+    mode="markers",
+    marker=dict(size=3, opacity=0.7),
+    text=[
+        f"Variant {vid}<br>Gen {g}<br>Score {s:.3f}"
+        for vid, g, s in zip(df_land["Plasmid_Variant_Index"],
+                             df_land["Directed_Evolution_Generation"],
+                             df_land["Activity_Score"])
+    ],
+    hoverinfo="text",
+    name="Variants"
+))
+
+fig.update_layout(
+    title="3D Activity Landscape (Sequence Diversity → PCA → Activity Score)",
+    scene=dict(
+        xaxis_title="Sequence diversity (PCA Dim 1)",
+        yaxis_title="Sequence diversity (PCA Dim 2)",
+        zaxis_title="Activity Score"
+    ),
+    width=900,
+    height=650,
+    margin=dict(l=0, r=0, b=0, t=50)
+)
+
+fig.show()

@@ -3,6 +3,16 @@ from flask import Flask, render_template, request, redirect, url_for
 from models import db, User
 from models import Experiment
 from uniprot_fetch.staging.uniprot_fetch import fetch_uniprot_information
+from Bio import Align
+from Bio.Align import substitution_matrices
+from plasmid_validation.staging.plasmid_validation import (
+    filter_orf_length,
+    make_protein_aligner_blosum62,
+    length_compatibility,
+    select_best_orf_by_alignment
+)
+
+
 
 app = Flask(__name__)
 
@@ -91,15 +101,40 @@ def run_validation(experiment_id):
         experiment.message = "Fetching UniProt record..."
         db.session.commit()
 
-        # TEMP: using experiment.uniprot_accession directly, but we will add error handling and validation later
+        # Uniprot fetch and validation logic
         accession_id = experiment.uniprot_accession
-
         uniprot_record = fetch_uniprot_information(accession_id)
 
-        # If we reach here, UniProt fetch succeeded
-        experiment.status = "completed"
-        experiment.message = "UniProt validation successful"
+        # Extract amino acid sequence from UniProt record
+        from uniprot_fetch.staging.uniprot_fetch import extract_uniprot_aa_sequence
+        uniprot_seq = extract_uniprot_aa_sequence(uniprot_record)
 
+        #Temporary ORFs (placeholder for real ORF parser)
+        orfs = [
+            {
+                "orf_aa": uniprot_seq,
+                "length_aa": len(uniprot_seq),
+                "orf_id": 1
+            }
+        ]
+
+        #ORF alignment pipeline
+        from plasmid_validation.staging.plasmid_validation import select_best_orf_by_alignment
+        result = select_best_orf_by_alignment(orfs, uniprot_seq)
+
+        #Handle results
+        if result["status"] == "match_found":
+            experiment.best_alignment_score = result["alignment_score"]
+            experiment.status = "completed"
+            experiment.message = "UniProt and ORF alignment successful"
+        else:
+            experiment.status = "failed"
+            experiment.message = result.get(
+                "message",
+                "No suitable ORF match found"
+            )
+
+    
     except Exception as e:
         experiment.status = "failed"
         experiment.message = str(e)
@@ -107,6 +142,9 @@ def run_validation(experiment_id):
     db.session.commit()
     return redirect(url_for("experiment_detail", experiment_id=experiment.id))
 
+    
+
+#updates database tables 
 with app.app_context():
     db.create_all()
 

@@ -1,4 +1,5 @@
 from Bio import SeqIO
+from Bio.Seq import Seq
 
 def validate_dna_sequence(sequence: str) -> None:
 
@@ -9,14 +10,16 @@ def validate_dna_sequence(sequence: str) -> None:
     :type sequence: str
     """
 
+    seq = sequence.upper()
     nucleotides = {"A", "T", "C", "G", "N"}
-    # this gets rid of any dupliactes when printing, and sorts in ascending order
-    inv_char = sorted({x for x in sequence if x not in nucleotides})
-    if inv_char:
-        #if sequence contains any invalid characters, raise explicit valueerror
+    # make set instead of list - this gets rid of any dupliactes when printing, and sorts in ascending order
+    inv_char = sorted({x for x in seq if x not in nucleotides})
+#    for x in sequence: (instead of list comprehensions, this is another way - original for loop code I wrote)
+#        if x not in nucleotides:
+#            inv_char.append(x)
+    if inv_char: #inv_char = [] is false, inv_char = [..] is true, therefore if inv_char contains elements, raise valueerror
         raise ValueError(f"Invalid characters found in DNA sequence: {inv_char}. Only A, C, G, T (and N) are allowed.")
     
-
 def fasta_parsing(fasta_file) -> dict:
 
     """
@@ -47,11 +50,12 @@ def fasta_parsing(fasta_file) -> dict:
     }
     return plasmid_dict
 
-def translate(sequence: str, start_codons: set[str] | None = None) -> str:
-    
+
+def translate_with_alt_start(sequence: str, start_codons: set[str] | None = None) -> str:
+   
     """
-    Translate DNA nucleotide sequence into protein amino acid sequence.
-    This function translates a string of nucleotide sequence into amino acid sequence, including stop codon.
+    This function translates a string of DNA nucleotide sequence into amino acid sequence, stopping before the stop codon, and forces
+    the first amino acid to M if the first codon is in start_codons (e.g. ATG, GTG, TTG).
     :param sequence: DNA nucleotide sequence
     :type sequence: str
     :param start_codons: Set of codons treated as valid translation initiators. If None, defaults to common bacterial start codons {ATG, GTG, TTG}.
@@ -59,44 +63,19 @@ def translate(sequence: str, start_codons: set[str] | None = None) -> str:
     :return: protein amino acid sequence
     :rtype: str
     """
-    codon_table = {
-        'ATA':'I', 'ATC':'I', 'ATT':'I', 'ATG':'M',
-        'ACA':'T', 'ACC':'T', 'ACG':'T', 'ACT':'T',
-        'AAC':'N', 'AAT':'N', 'AAA':'K', 'AAG':'K',
-        'AGC':'S', 'AGT':'S', 'AGA':'R', 'AGG':'R',
-        'CTA':'L', 'CTC':'L', 'CTG':'L', 'CTT':'L',
-        'CCA':'P', 'CCC':'P', 'CCG':'P', 'CCT':'P',
-        'CAC':'H', 'CAT':'H', 'CAA':'Q', 'CAG':'Q',
-        'CGA':'R', 'CGC':'R', 'CGG':'R', 'CGT':'R',
-        'GTA':'V', 'GTC':'V', 'GTG':'V', 'GTT':'V',
-        'GCA':'A', 'GCC':'A', 'GCG':'A', 'GCT':'A',
-        'GAC':'D', 'GAT':'D', 'GAA':'E', 'GAG':'E',
-        'GGA':'G', 'GGC':'G', 'GGG':'G', 'GGT':'G',
-        'TCA':'S', 'TCC':'S', 'TCG':'S', 'TCT':'S',
-        'TTC':'F', 'TTT':'F', 'TTA':'L', 'TTG':'L',
-        'TAC':'Y', 'TAT':'Y', 'TAA':'*', 'TAG':'*',
-        'TGC':'C', 'TGT':'C', 'TGA':'*', 'TGG':'W',
-    }
 
-    # if user doesn't specify the start_codon mode, then just use default
+    seq = sequence.upper()
+    # if user did not provide start_codons selection, use default start_codons
     if start_codons is None:
         start_codons = {"ATG", "GTG", "TTG"}
+    # using biopython translate module, translate sequence up until the stop codon - do not include *
+    aa_seq = str(Seq(seq).translate(to_stop=True))
+    first_codon = seq[:3]
+    # if the first_codon in aa_seq is in the selected start_codons, force the first codon into M for UniProt reference sequence alignment
+    if first_codon in start_codons and aa_seq:
+        aa_seq = "M" + aa_seq[1:]
 
-    aminoacid = ""
-    
-    # loops through the sequences for every 3 nucleotides, for each codon
-    for x in range(0,len(sequence),3): 
-        codon = sequence[x:x+3]
-        if x == 0 and codon in start_codons:
-            # X is used here for invalid codons/codons not found in dict
-            aminoacid += "M"
-        else:
-            # if not a start codon, get the corresponding amino acid symbol
-            # X is used here for invalid codons/codons not found in dict
-            aminoacid += codon_table.get(codon,"X")
-
-    return aminoacid
-
+    return aa_seq
 
 
 
@@ -168,8 +147,8 @@ def candidate_orf(plasmid_dict: dict, start_codons: set[str] | None = None) -> l
                             # ORF wraps the origin if it extends past the original length
                             wraps_origin = stop_coord > L
                             # translate ORF nucleotide sequence to amino acid sequence and remove terminal stop codon
-                            # in preparation of comparison with UniProt sequence (does not contain *)
-                            orf_aa = translate(orf_nt, start_codons = start_codons).rstrip("*")
+                            # in preparation of comparison with UniProt sequence (starts with M, does not contain *)
+                            orf_aa = translate_with_alt_start(orf_nt, start_codons = start_codons)
                             # apply a minimum amino acid length filter of 50 to reduce search space and false positives from short random ORFs
                             if len(orf_aa) >= min_aa_len:
                                 orfs.append({
@@ -224,7 +203,7 @@ def candidate_orf(plasmid_dict: dict, start_codons: set[str] | None = None) -> l
                             stop_coord = (L - start_pos) % L
                             # reverse ORFs wrap origin if the stop position precedes the start position
                             wraps_origin = stop_coord <= start_coord
-                            orf_aa = translate(orf_nt, start_codons = start_codons).rstrip("*")
+                            orf_aa = translate_with_alt_start(orf_nt, start_codons = start_codons)
                             if len(orf_aa) >= min_aa_len:
                                 orfs.append({
                                     "strand" : "-",
@@ -241,5 +220,4 @@ def candidate_orf(plasmid_dict: dict, start_codons: set[str] | None = None) -> l
                             break
 
     return orfs
-            
             

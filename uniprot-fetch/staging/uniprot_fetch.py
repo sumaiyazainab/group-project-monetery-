@@ -98,5 +98,6 @@ def extract_key_domains(features_df: pd.DataFrame) -> pd.DataFrame:
     """
 
     # filter domain-only features into a new key domains dataframe - case-insensitive matching is applied to ensure robust feature selection
-    key_domains_df = features_df[features_df["type"].str.upper() == "DOMAIN"] 
+    # prevent errors if the "type" column contains null values
+    key_domains_df = features_df[features_df["type"].fillna("").str.upper() == "DOMAIN"]
     return key_domains_df

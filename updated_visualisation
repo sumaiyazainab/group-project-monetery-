@@ -1,280 +1,201 @@
-import numpy as np
-import pandas as pd
-
-def add_activity_score(df: pd.DataFrame,
-                       dna_col="DNA_Quantification_fg",
-                       prot_col="Protein_Quantification_pg",
-                       gen_col="Directed_Evolution_Generation",
-                       control_col="Control",
-                       baseline_stat="median",
-                       eps=1e-9) -> pd.DataFrame:
-    """
-    Adds baseline-corrected Activity_Score to df.
-
-    Activity_Score = (DNA - DNA_baseline) / (Protein - Protein_baseline + eps)
-
-    Baselines are computed per generation from Control==True rows.
-    If a generation lacks controls, fall back to global control baseline.
-    """
-
-    out = df.copy()
-
-    if control_col not in out.columns:
-        raise ValueError(f"'{control_col}' column not found. Dataset needs WT controls for baseline.")
-
-    ctrl = out[out[control_col] == True].copy()
-    if ctrl.empty:
-        raise ValueError("No control rows found (Control==True). Cannot compute baselines.")
-
-    agg_func = np.median if baseline_stat == "median" else np.mean
-
-    # per-generation baselines
-    gen_base = (
-        ctrl.groupby(gen_col)[[dna_col, prot_col]]
-            .agg(agg_func)
-            .rename(columns={dna_col: "DNA_baseline_fg", prot_col: "Protein_baseline_pg"})
-    )
-
-    out = out.merge(gen_base, how="left", left_on=gen_col, right_index=True)
-
-    # global fallback baselines (if any generation has no controls)
-    out["DNA_baseline_fg"] = out["DNA_baseline_fg"].fillna(agg_func(ctrl[dna_col].values))
-    out["Protein_baseline_pg"] = out["Protein_baseline_pg"].fillna(agg_func(ctrl[prot_col].values))
-
-    # baseline-corrected net values
-    out["DNA_net_fg"] = out[dna_col] - out["DNA_baseline_fg"]
-    out["Protein_net_pg"] = out[prot_col] - out["Protein_baseline_pg"]
-
-    out["Activity_Score"] = out["DNA_net_fg"] / (out["Protein_net_pg"] + eps)
-    out["Activity_Score"] = out["Activity_Score"].replace([np.inf, -np.inf], np.nan)
-
-    return out
-def get_top_performers(df: pd.DataFrame, n=10, control_col="Control") -> pd.DataFrame:
-    d = df[df[control_col] == False].copy()
-    d = d.dropna(subset=["Activity_Score"])
-    cols = [
-        "Plasmid_Variant_Index",
-        "Parent_Plasmid_Variant",
-        "Directed_Evolution_Generation",
-        "DNA_Quantification_fg",
-        "Protein_Quantification_pg",
-        "Activity_Score",
-    ]
-    return d.sort_values("Activity_Score", ascending=False)[cols].head(n)
-import matplotlib.pyplot as plt
-import numpy as np
-
-def plot_activity_by_generation(df: pd.DataFrame,
-                                gen_col="Directed_Evolution_Generation",
-                                control_col="Control",
-                                save_path=None):
-
-    # Remove controls and NaNs
-    d = df[df[control_col] == False].dropna(subset=["Activity_Score"]).copy()
-
-    gens = sorted(d[gen_col].unique())
-    data = [d.loc[d[gen_col] == g, "Activity_Score"].values for g in gens]
-
-    plt.figure(figsize=(10, 6))
-
-    # Violin plot
-    parts = plt.violinplot(data,
-                           positions=range(1, len(gens)+1),
-                           showmeans=False,
-                           showmedians=False,
-                           showextrema=False)
-
-    # Style violins
-    for pc in parts['bodies']:
-        pc.set_alpha(0.6)
-
-    # Add median + min/max whiskers manually
-    for i, values in enumerate(data, start=1):
-        if len(values) == 0:
-            continue
-
-        median = np.median(values)
-        min_val = np.min(values)
-        max_val = np.max(values)
-
-        # Vertical line (whisker)
-        plt.plot([i, i], [min_val, max_val], linewidth=1.5)
-
-        # Median marker
-        plt.scatter(i, median, s=50, zorder=3)
-
-    plt.xticks(range(1, len(gens)+1), gens)
-    plt.xlabel("Generation")
-    plt.ylabel("Activity Score")
-    plt.title("Activity Score Distribution by Generation")
-    plt.tight_layout()
-
-    if save_path:
-        plt.savefig(save_path, dpi=150)
-        plt.close()
-        return save_path
-    else:
-        plt.show()
-        return None
+from typing import List
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-
-from matplotlib import cm
+import plotly.graph_objects as go
 from sklearn.decomposition import PCA
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.neighbors import KNeighborsRegressor
 
 
-def _kmer_vocab(k: int) -> list[str]:
-    alphabet = "ACGT"
-    vocab = [""]
-    for _ in range(k):
-        vocab = [p + a for p in vocab for a in alphabet]
-    return vocab
+
+#TOP 10 PERFORMERS TABLE
 
 
-def _kmer_freq_vector(seq: str, k: int, kmer_to_idx: dict[str, int]) -> np.ndarray:
+ESSENTIAL_FIELDS = [
+    "Plasmid_Variant_Index",
+    "Parent_Plasmid_Variant",
+    "Directed_Evolution_Generation",
+    "DNA_Quantification_fg",
+    "Protein_Quantification_pg",
+]
+
+def top_performers_table(df: pd.DataFrame, n: int = 10) -> pd.DataFrame:
     """
-    Normalised k-mer frequency vector for a DNA string.
-    Non-ACGT kmers are skipped.
-    """
-    seq = str(seq).upper()
-    valid = set("ACGT")
-    v = np.zeros(len(kmer_to_idx), dtype=float)
-
-    if len(seq) < k:
-        return v
-
-    for i in range(len(seq) - k + 1):
-        kmer = seq[i:i+k]
-        if set(kmer).issubset(valid):
-            v[kmer_to_idx[kmer]] += 1.0
-
-    s = v.sum()
-    if s > 0:
-        v /= s
-    return v
-
-
-def _idw_grid(x: np.ndarray,
-              y: np.ndarray,
-              z: np.ndarray,
-              grid_n: int = 60,
-              power: float = 2.0,
-              eps: float = 1e-12,
-              chunk: int = 500) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Inverse Distance Weighting interpolation onto a grid.
-    Vectorised with chunking to avoid huge memory usage.
-    """
-    xi = np.linspace(x.min(), x.max(), grid_n)
-    yi = np.linspace(y.min(), y.max(), grid_n)
-    Xg, Yg = np.meshgrid(xi, yi)
-
-    Zg = np.zeros_like(Xg, dtype=float)
-
-    # Flatten grid points for chunked distance computation
-    gx = Xg.ravel()
-    gy = Yg.ravel()
-
-    out = np.zeros_like(gx, dtype=float)
-
-    for start in range(0, gx.size, chunk):
-        end = min(start + chunk, gx.size)
-
-        dx = x[None, :] - gx[start:end, None]
-        dy = y[None, :] - gy[start:end, None]
-        d2 = dx * dx + dy * dy + eps  # squared distance
-
-        w = 1.0 / (d2 ** (power / 2.0))
-        out[start:end] = (w @ z) / (w.sum(axis=1))
-
-    Zg[:, :] = out.reshape(Xg.shape)
-    return Xg, Yg, Zg
-
-
-def plot_3d_activity_landscape(df: pd.DataFrame,
-                               seq_col: str = "Assembled_DNA_Sequence",
-                               score_col: str = "Activity_Score",
-                               control_col: str = "Control",
-                               reducer: str = "pca",       # "pca" (recommended) or "tsne" (optional)
-                               k: int = 4,                 # k-mer size (4 works well; 3 is faster)
-                               grid_n: int = 60,            # surface resolution
-                               idw_power: float = 2.0,      # higher = more local peaks
-                               scatter_points: bool = True,
-                               save_path: str | None = None,
-                               random_state: int = 0):
-    """
-    3D activity landscape: X/Y = sequence diversity (PCA or t-SNE),
-    Z/surface color = Activity Score.
-
-    Expects df to already contain Activity_Score.
+    Returns top n performing non-control variants ranked by Activity_Score.
+    Assumes Activity_Score and mutation columns already exist.
     """
 
-    # Filter usable rows
-    d = df.copy()
-    if control_col in d.columns:
-        d = d[d[control_col] == False]
+    required_cols = ESSENTIAL_FIELDS + [
+        "Activity_Score",
+        "NT_Mutations_vs_WT_in_Gene",
+        "AA_Mutations_vs_WT",
+        "Control"
+    ]
 
-    d = d.dropna(subset=[seq_col, score_col]).copy()
-    d[score_col] = pd.to_numeric(d[score_col], errors="coerce")
-    d = d.dropna(subset=[score_col])
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
 
-    if d.empty:
-        raise ValueError("No valid rows for 3D landscape (check sequences and Activity_Score).")
+    candidates = df[df["Control"] == False].copy()
+    candidates = candidates.sort_values("Activity_Score", ascending=False)
 
-    # Build k-mer feature matrix
-    vocab = _kmer_vocab(k)
-    kmer_to_idx = {km: i for i, km in enumerate(vocab)}
-    X_feat = np.vstack([_kmer_freq_vector(s, k=k, kmer_to_idx=kmer_to_idx) for s in d[seq_col].values])
+    cols = ESSENTIAL_FIELDS + [
+        "Activity_Score",
+        "NT_Mutations_vs_WT_in_Gene",
+        "AA_Mutations_vs_WT"
+    ]
 
-    # Reduce to 2D (sequence diversity axes)
-    reducer = reducer.lower()
-    if reducer == "pca":
-        coords = PCA(n_components=2, random_state=random_state).fit_transform(X_feat)
-        xlab, ylab = "Sequence diversity (PCA 1)", "Sequence diversity (PCA 2)"
-    elif reducer == "tsne":
-        # Optional: t-SNE tends to be slower but can look nicer.
-        from sklearn.manifold import TSNE
-        coords = TSNE(n_components=2, perplexity=30, init="pca", learning_rate="auto",
-                      random_state=random_state).fit_transform(X_feat)
-        xlab, ylab = "Sequence diversity (t-SNE 1)", "Sequence diversity (t-SNE 2)"
-    else:
-        raise ValueError("reducer must be 'pca' or 'tsne'.")
+    top = candidates[cols].head(n).reset_index(drop=True)
+    top["Activity_Score"] = top["Activity_Score"].astype(float).round(4)
 
-    x = coords[:, 0]
-    y = coords[:, 1]
-    z = d[score_col].to_numpy(dtype=float)
+    return top
 
-    # Interpolate a surface (mountain range)
-    Xg, Yg, Zg = _idw_grid(x, y, z, grid_n=grid_n, power=idw_power)
 
-    # Plot
-    fig = plt.figure(figsize=(10, 7))
-    ax = fig.add_subplot(111, projection="3d")
 
-    surf = ax.plot_surface(
-        Xg, Yg, Zg,
-        cmap=cm.inferno,
-        linewidth=0,
-        antialiased=True,
-        alpha=0.85
+#ACTIVITY DISTRIBUTION PER GENERATION (VIOLIN PLOT)
+
+
+def plot_activity_distribution(df: pd.DataFrame):
+    """
+    Returns a matplotlib Figure object showing Activity Score
+    distribution per generation.
+    """
+
+    required_cols = [
+        "Directed_Evolution_Generation",
+        "Activity_Score",
+        "Control"
+    ]
+
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+
+    plot_df = df[df["Control"] == False].copy()
+
+    generations = sorted(
+        plot_df["Directed_Evolution_Generation"]
+        .dropna()
+        .unique()
+        .tolist()
     )
 
-    if scatter_points:
-        ax.scatter(x, y, z, s=18, depthshade=True)
+    data = [
+        plot_df.loc[
+            plot_df["Directed_Evolution_Generation"] == g,
+            "Activity_Score"
+        ].dropna().values
+        for g in generations
+    ]
 
-    ax.set_title("3D Activity Landscape")
-    ax.set_xlabel(xlab)
-    ax.set_ylabel(ylab)
-    ax.set_zlabel("Activity Score")
+    fig, ax = plt.subplots(figsize=(10, 5))
 
-    fig.colorbar(surf, shrink=0.55, aspect=12, label="Activity Score")
-    plt.tight_layout()
+    ax.violinplot(data, showmeans=True, showmedians=True)
 
-    if save_path:
-        plt.savefig(save_path, dpi=150)
-        plt.close(fig)
-        return save_path
-    else:
-        plt.show()
-        return None
+    ax.set_xticks(np.arange(1, len(generations) + 1))
+    ax.set_xticklabels([str(g) for g in generations])
+
+    ax.set_xlabel("Generation")
+    ax.set_ylabel("WT-normalised Activity Score")
+    ax.set_title("Activity Score Distribution by Generation")
+    ax.grid(True, alpha=0.3)
+
+    return fig
+
+
+
+#3D ACTIVITY LANDSCAPE
+
+
+def plot_3d_activity_landscape(
+    df: pd.DataFrame,
+    kmer_size: int = 3,
+    grid_size: int = 70,
+    knn_neighbors: int = 15
+):
+    """
+    Returns a Plotly Figure object representing
+    the 3D sequence-activity landscape.
+    
+    Assumes:
+    - Protein_Seq column exists
+    - Activity_Score column exists
+    - Control column exists
+    """
+
+    required_cols = ["Protein_Seq", "Activity_Score", "Control"]
+
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing required columns: {missing}")
+
+    d = df[(df["Control"] == False) & df["Protein_Seq"].notna()].copy()
+    d = d.dropna(subset=["Activity_Score"])
+
+    if len(d) < 10:
+        raise ValueError("At least 10 variants required to build landscape.")
+
+    #k-mer encoding 
+    vectorizer = CountVectorizer(
+        analyzer="char",
+        ngram_range=(kmer_size, kmer_size)
+    )
+    X = vectorizer.fit_transform(d["Protein_Seq"])
+
+    #PCA reduction 
+    pca = PCA(n_components=2, random_state=42)
+    coords = pca.fit_transform(X.toarray())
+
+    d["Dim1"] = coords[:, 0]
+    d["Dim2"] = coords[:, 1]
+
+    #Grid creation
+    x_lin = np.linspace(d["Dim1"].min(), d["Dim1"].max(), grid_size)
+    y_lin = np.linspace(d["Dim2"].min(), d["Dim2"].max(), grid_size)
+    xx, yy = np.meshgrid(x_lin, y_lin)
+    grid_xy = np.c_[xx.ravel(), yy.ravel()]
+
+    #KNN regression 
+    knn = KNeighborsRegressor(
+        n_neighbors=knn_neighbors,
+        weights="distance"
+    )
+    knn.fit(d[["Dim1", "Dim2"]].values, d["Activity_Score"].values)
+    zz = knn.predict(grid_xy).reshape(grid_size, grid_size)
+
+    #Plotly figure
+    fig = go.Figure()
+
+    fig.add_trace(go.Surface(
+        x=xx,
+        y=yy,
+        z=zz,
+        surfacecolor=zz,
+        colorscale="Plasma",
+        opacity=0.95,
+        colorbar=dict(title="Activity Score")
+    ))
+
+    fig.add_trace(go.Scatter3d(
+        x=d["Dim1"],
+        y=d["Dim2"],
+        z=d["Activity_Score"],
+        mode="markers",
+        marker=dict(size=3, opacity=0.7),
+        name="Variants"
+    ))
+
+    fig.update_layout(
+        title="3D Activity Landscape",
+        scene=dict(
+            xaxis_title="Sequence Diversity (PCA 1)",
+            yaxis_title="Sequence Diversity (PCA 2)",
+            zaxis_title="Activity Score"
+        ),
+        width=900,
+        height=650,
+        margin=dict(l=0, r=0, b=0, t=50)
+    )
+
+    return fig

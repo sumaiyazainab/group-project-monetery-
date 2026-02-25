@@ -24,11 +24,11 @@ def fasta_parsing(fasta_file) -> dict:
 
     """
     Parse plasmid FASTA file.
-    This function parses a plasmid FASTA file, validates for appropriate DNA sequence, and extracts the header, nucleotide sequence, sequence length and GC percentage.
+    This function parses a plasmid FASTA file, validates for appropriate DNA sequence, and extracts the header, nucleotide sequence, and sequence length.
     ValueError is raised if DNA sequence contains invalid characters that are not A, C, G, T (and N).
     :param fasta_file: FASTA file including the header and DNA sequence of one plasmid
     :type fasta_file: str
-    :return: Dictionary of the plasmid header, DNA sequence, length_bp, and gc_percent.
+    :return: Dictionary of the plasmid header, DNA sequence, and length_bp.
     :rtype: dict
     """
     # SeqIO.parse accepts either a filepath or an open handle; made into a list to check for single-record plasmid sequence in file

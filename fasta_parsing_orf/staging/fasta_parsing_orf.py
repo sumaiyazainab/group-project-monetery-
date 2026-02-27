@@ -1,4 +1,5 @@
 from Bio import SeqIO
+from typing import Optional, Set, List, Dict
 
 def validate_dna_sequence(sequence: str) -> None:
 
@@ -47,7 +48,7 @@ def fasta_parsing(fasta_file) -> dict:
     }
     return plasmid_dict
 
-def translate(sequence: str, start_codons: set[str] | None = None) -> str:
+def translate(sequence: str, start_codons: Optional[Set[str]] = None) -> str:
     
     """
     Translate DNA nucleotide sequence into protein amino acid sequence.
@@ -100,7 +101,7 @@ def translate(sequence: str, start_codons: set[str] | None = None) -> str:
 
 
 
-def candidate_orf(plasmid_dict: dict, start_codons: set[str] | None = None) -> list[dict]:
+def candidate_orf(plasmid_dict: dict, start_codons: Optional[Set[str]] = None) -> List[Dict]:
 
     """
     Find and translate candidate ORF from plasmid FASTA file.

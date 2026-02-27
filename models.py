@@ -37,6 +37,7 @@ class Experiment(db.Model):
 
     start_codon = db.Column(db.String(3), nullable=True)
 
+    plasmid_fasta_path = db.Column(db.String(255), nullable=False)
 
     def __repr__(self):
         return f"<Experiment {self.id}: {self.name}>"

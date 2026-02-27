@@ -3,7 +3,7 @@
 {% block content %}
 <h2>Create New Experiment</h2>
 
-<form method="POST">
+<form method="POST" enctype="multipart/form-data">
 
     <label for="name">Experiment Name</label><br>
     <input type="text" id="name" name="name" required><br><br>
@@ -15,6 +15,10 @@
       placeholder="e.g. P05067"
       required
     ><br><br>
+    
+    <label>Plasmid FASTA</label>
+    <input type="file" name="plasmid_fasta" accept=".fasta,.fa" required>
+    <br><br>
 
     <p><strong>Start Codon (optional)</strong></p>
 

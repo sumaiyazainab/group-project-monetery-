@@ -1,8 +1,10 @@
 #Web portal backend using Flask. This is a simple implementation to get us started, and will be expanded with more features and better security in the future.
+#Importing necessary libraries and modules
+import os
 from flask import Flask, render_template, request, redirect, url_for
 from models import db, User
 from models import Experiment
-from uniprot_fetch.staging.uniprot_fetch import fetch_uniprot_information
+from uniprot_fetch.staging.uniprot_fetch import fetch_uniprot_information, extract_uniprot_aa_sequence
 from Bio import Align
 from Bio.Align import substitution_matrices
 from plasmid_validation.staging.plasmid_validation import (
@@ -11,15 +13,21 @@ from plasmid_validation.staging.plasmid_validation import (
     length_compatibility,
     select_best_orf_by_alignment
 )
+from werkzeug.utils import secure_filename
+from fasta_parsing_orf.staging.fasta_parsing_orf import fasta_parsing, candidate_orf
 
-
-
+#Initialize the Flask application
 app = Flask(__name__)
 
 # Temporary database (for easy development)
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///app.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
+
+# Initialize the database with the Flask app
 db.init_app(app)
 
 #Creating a home page route
@@ -60,13 +68,22 @@ def create_experiment():
     if request.method == "POST":
         name = request.form["name"]
         start_codon = request.form.get("start_codon")  # returns None if not selected
-
+        
+        #Temporary user assignment (we will implement proper user sessions later)
         user = User.query.first()
 
+        #Handle uploaded FASTA file
+        file = request.files["plasmid_fasta"]
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+        file.save(filepath)
+
+        # Experiment creation
         experiment = Experiment(
             user_id=user.id,   # TEMP: using current_user.id, but we will implement proper user sessions later
             name=name,
             uniprot_accession=request.form["uniprot_accession"],
+            plasmid_fasta_path=filepath,
             start_codon=start_codon,
             status="pending",
             message="Experiment created"
@@ -98,41 +115,39 @@ def run_validation(experiment_id):
 
     try:
         experiment.status = "running"
-        experiment.message = "Fetching UniProt record..."
+        experiment.message = "Parsing plasmid FASTA..."
         db.session.commit()
 
-        # Uniprot fetch and validation logic
-        accession_id = experiment.uniprot_accession
-        uniprot_record = fetch_uniprot_information(accession_id)
+        #Parse FASTA 
+        plasmid = fasta_parsing(experiment.plasmid_fasta_path)
 
-        # Extract amino acid sequence from UniProt record
-        from uniprot_fetch.staging.uniprot_fetch import extract_uniprot_aa_sequence
-        uniprot_seq = extract_uniprot_aa_sequence(uniprot_record)
+        #Determine start codons
+        if experiment.start_codon:
+            start_codons = {experiment.start_codon}
+        else:
+            start_codons = None  # defaults to ATG, GTG, TTG
 
-        #Temporary ORFs (placeholder for real ORF parser)
-        orfs = [
-            {
-                "orf_aa": uniprot_seq,
-                "length_aa": len(uniprot_seq),
-                "orf_id": 1
-            }
-        ]
+        #Find candidate ORFs
+        orfs = candidate_orf(plasmid, start_codons=start_codons)
 
-        #ORF alignment pipeline
-        from plasmid_validation.staging.plasmid_validation import select_best_orf_by_alignment
+        experiment.message = f"{len(orfs)} ORFs found. Fetching UniProt..."
+        db.session.commit()
+
+        #Fetch UniProt protein
+        record = fetch_uniprot_information(experiment.uniprot_accession)
+        uniprot_seq = extract_uniprot_aa_sequence(record)
+
+        #Alignment + best ORF
         result = select_best_orf_by_alignment(orfs, uniprot_seq)
 
-        #Handle results
         if result["status"] == "match_found":
-            experiment.best_alignment_score = result["alignment_score"]
             experiment.status = "completed"
-            experiment.message = "UniProt and ORF alignment successful"
+            experiment.best_orf_id = result.get("start_nt")
+            experiment.best_alignment_score = result.get("alignment_score")
+            experiment.message = "Best ORF identified successfully"
         else:
             experiment.status = "failed"
-            experiment.message = result.get(
-                "message",
-                "No suitable ORF match found"
-            )
+            experiment.message = result.get("message", "No suitable ORF match found")
 
     
     except Exception as e:
@@ -142,11 +157,23 @@ def run_validation(experiment_id):
     db.session.commit()
     return redirect(url_for("experiment_detail", experiment_id=experiment.id))
 
+ #Utility function to ensure a default user exists for testing purposes 
+def ensure_default_user():
+    user = User.query.first()
+    if not user:
+        user = User(
+            username="demo",
+            email="demo@example.com",
+            password_hash="demo"  # TEMP: replace with hashing later
+        )
+        db.session.add(user)
+        db.session.commit()
+    return user
     
-
 #updates database tables 
 with app.app_context():
     db.create_all()
+    ensure_default_user()
 
 if __name__ == "__main__":
     app.run(debug=True)

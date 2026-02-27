@@ -1,0 +1,388 @@
+from __future__ import annotations
+
+from typing import List, Dict, Tuple, Optional
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import plotly.graph_objects as go
+
+from sklearn.decomposition import PCA
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.neighbors import KNeighborsRegressor
+
+import ast
+
+ESSENTIAL_FIELDS = [
+    "Plasmid_Variant_Index",
+    "Parent_Plasmid_Variant",
+    "Directed_Evolution_Generation",
+    "DNA_Quantification_fg",
+    "Protein_Quantification_pg",
+    "Control",
+]
+
+MUTATION_FIELDS_EXPECTED = [
+    "mutation_count",   # produced by Phase 6 variant_analysis
+    "synonymous",
+    "nonsynonymous",
+    "truncating",
+]
+
+ACTIVITY_FIELDS_EXPECTED = [
+    "raw_activity",     # produced by Phase 7 activity_scoring
+    "Activity_Score",
+]
+
+
+def _require_columns(df: pd.DataFrame, required: List[str], name: str = "DataFrame") -> None:
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"{name} is missing required columns: {missing}")
+
+
+def ensure_mutation_count(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensure df contains a mutation_count column.
+
+    Expected:
+      - If Phase 6 ran, df already has 'mutation_count'
+      - Otherwise we add mutation_count=NaN (so tables still render)
+
+    Returns:
+      Copy of df with mutation_count present.
+    """
+    out = df.copy()
+    if "mutation_count" not in out.columns:
+        out["mutation_count"] = np.nan
+    return out
+
+def ensure_mutation_count(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+
+    # Keep if already exists
+    if "mutation_count" in out.columns:
+        out["mutation_count"] = pd.to_numeric(out["mutation_count"], errors="coerce")
+        return out
+
+    # Try derive from mutations list
+    if "mutations" in out.columns:
+        def _to_list(x):
+            if isinstance(x, list):
+                return x
+            if isinstance(x, str):
+                try:
+                    return ast.literal_eval(x)  # handles "['A12V']"
+                except Exception:
+                    return None
+            return None
+
+        muts = out["mutations"].apply(_to_list)
+        out["mutation_count"] = muts.apply(lambda x: len(x) if isinstance(x, list) else np.nan)
+        return out
+
+    # Try derive from aa_positions list
+    if "aa_positions" in out.columns:
+        def _to_list(x):
+            if isinstance(x, list):
+                return x
+            if isinstance(x, str):
+                try:
+                    return ast.literal_eval(x)
+                except Exception:
+                    return None
+            return None
+
+        pos = out["aa_positions"].apply(_to_list)
+        out["mutation_count"] = pos.apply(lambda x: len(x) if isinstance(x, list) else np.nan)
+        return out
+
+    out["mutation_count"] = np.nan
+    return out
+
+def top_performers_table(
+    df: pd.DataFrame,
+    n: int = 10,
+    exclude_controls: bool = True,
+    essential_fields: Optional[List[str]] = None,
+    score_col: str = "Activity_Score",
+) -> pd.DataFrame:
+    """
+    Return the top N performing variants by Activity Score.
+
+    Output columns:
+      essential fields + Activity_Score +
+      mutations/aa_positions (if present) +
+      mutation summary columns (mutation_count, synonymous, nonsynonymous, truncating if present)
+    """
+    if essential_fields is None:
+        essential_fields = ESSENTIAL_FIELDS
+
+    _require_columns(df, [score_col], name="top_performers_table input")
+    _require_columns(
+        df,
+        [c for c in essential_fields if c != "Control"],
+        name="top_performers_table input",
+    )
+
+    out = ensure_mutation_count(df)
+
+    if exclude_controls and "Control" in out.columns:
+        out = out[out["Control"] == False].copy()
+
+    out = out.sort_values(score_col, ascending=False).copy()
+
+    # Include mutation detail columns if available
+    mutation_detail_cols = ["mutations", "aa_positions"]
+    mutation_detail_cols = [c for c in mutation_detail_cols if c in out.columns]
+
+    # Include mutation summary columns if available
+    mutation_summary_cols = ["mutation_count", "synonymous", "nonsynonymous", "truncating"]
+    mutation_summary_cols = [c for c in mutation_summary_cols if c in out.columns]
+
+    cols = (
+        [c for c in essential_fields if c in out.columns]
+        + [score_col]
+        + mutation_detail_cols
+        + mutation_summary_cols
+    )
+
+    top = out[cols].head(n).reset_index(drop=True)
+
+    # tidy formatting
+    top[score_col] = (
+        pd.to_numeric(top[score_col], errors="coerce")
+        .astype(float)
+        .round(4)
+    )
+
+    return top
+
+# 3) ACTIVITY DISTRIBUTION PLOT (by generation)
+
+def plot_activity_distribution_by_generation(
+    df: pd.DataFrame,
+    score_col: str = "Activity_Score",
+    exclude_controls: bool = True,
+    kind: str = "violin",  # "violin" or "box"
+    figsize: Tuple[int, int] = (10, 5),
+    show_means: bool = True,
+    show_medians: bool = True,
+    save_path: Optional[str] = None,   
+    dpi: int = 300    
+) -> None:
+    """
+    Plot Activity Score distribution per generation.
+
+    Matplotlib-only so it's easy to embed as PNG in Flask templates.
+    """
+    _require_columns(df, ["Directed_Evolution_Generation", score_col], name="plot_activity_distribution_by_generation input")
+
+    plot_df = df.copy()
+    if exclude_controls and "Control" in plot_df.columns:
+        plot_df = plot_df[plot_df["Control"] == False].copy()
+
+    gens = sorted(plot_df["Directed_Evolution_Generation"].dropna().unique().tolist())
+    data = [
+        plot_df.loc[plot_df["Directed_Evolution_Generation"] == g, score_col].dropna().values
+        for g in gens
+    ]
+
+    plt.figure(figsize=figsize)
+
+    if kind.lower() == "violin":
+        plt.violinplot(data, showmeans=show_means, showmedians=show_medians)
+    elif kind.lower() == "box":
+        plt.boxplot(data, showmeans=show_means)
+    else:
+        raise ValueError("kind must be 'violin' or 'box'.")
+
+    plt.xticks(np.arange(1, len(gens) + 1), [str(g) for g in gens])
+    plt.xlabel("Generation")
+    plt.ylabel("WT-normalised Activity Score")
+    plt.title("Activity Score Distribution by Generation")
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    if save_path:
+        if not save_path.endswith(".png"):
+            save_path += ".png"
+        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
+    
+    plt.show()
+
+# 4) 3D ACTIVITY LANDSCAPE (Plotly)
+
+def build_2d_sequence_embedding(
+    df: pd.DataFrame,
+    seq_col: str = "protein_seq",
+    method: str = "pca",
+    kmer_k: int = 3,
+    n_components: int = 2,
+    random_state: int = 42,
+) -> pd.DataFrame:
+    """
+    Convert sequences into a 2D coordinate system.
+
+    Default aligns with your old approach:
+      - k-mer count vectors (CountVectorizer char n-grams)
+      - PCA -> Dim1, Dim2
+
+    Returns:
+      Copy of df with added columns: Dim1, Dim2
+    """
+    _require_columns(df, [seq_col], name="build_2d_sequence_embedding input")
+
+    out = df.copy()
+    out[seq_col] = out[seq_col].astype(str)
+
+    vectorizer = CountVectorizer(analyzer="char", ngram_range=(kmer_k, kmer_k))
+    X = vectorizer.fit_transform(out[seq_col])
+
+    if method.lower() == "pca":
+        reducer = PCA(n_components=n_components, random_state=random_state)
+        coords = reducer.fit_transform(X.toarray())
+    else:
+        raise ValueError("Only method='pca' is implemented here (fast + deterministic).")
+
+    out["Dim1"] = coords[:, 0]
+    out["Dim2"] = coords[:, 1]
+    return out
+
+
+def make_3d_activity_landscape(
+    df: pd.DataFrame,
+    score_col: str = "Activity_Score",
+    seq_col: str = "protein_seq",
+    exclude_controls: bool = True,
+    kmer_k: int = 3,
+    grid_size: int = 70,
+    knn_neighbors: int = 5,
+    knn_weights: str = "distance",
+    title: str = "3D Activity Landscape (Sequence Diversity → PCA → Activity Score)",   
+    save_html: Optional[str] = None, 
+) -> go.Figure:
+    """
+    Create a 3D topography-like surface where:
+      - X, Y = 2D sequence embedding (PCA over k-mers)
+      - Z = Activity Score
+      - Surface = KNN-regressed activity over grid
+      - Points = actual variants
+
+    Returns:
+      plotly.graph_objects.Figure (embed into Flask with fig.to_html())
+    """
+    _require_columns(df, [score_col, seq_col], name="make_3d_activity_landscape input")
+
+    plot_df = df.copy()
+    if exclude_controls and "Control" in plot_df.columns:
+        plot_df = plot_df[plot_df["Control"] == False].copy()
+
+    plot_df = plot_df.dropna(subset=[seq_col, score_col]).copy()
+
+    # Build Dim1/Dim2 from sequences
+    plot_df = build_2d_sequence_embedding(
+        plot_df,
+        seq_col=seq_col,
+        method="pca",
+        kmer_k=kmer_k,
+        n_components=2,
+        random_state=42,
+    )
+
+    # Training data
+    xy = plot_df[["Dim1", "Dim2"]].values
+    z = plot_df[score_col].astype(float).values
+
+    # Grid
+    x_lin = np.linspace(plot_df["Dim1"].min(), plot_df["Dim1"].max(), grid_size)
+    y_lin = np.linspace(plot_df["Dim2"].min(), plot_df["Dim2"].max(), grid_size)
+    xx, yy = np.meshgrid(x_lin, y_lin)
+    grid_xy = np.c_[xx.ravel(), yy.ravel()]
+
+    # KNN regression surface
+    knn = KNeighborsRegressor(n_neighbors=knn_neighbors, weights=knn_weights)
+    knn.fit(xy, z)
+    zz = knn.predict(grid_xy).reshape(grid_size, grid_size)
+
+    fig = go.Figure()
+
+    # Surface
+    fig.add_trace(go.Surface(
+        x=xx, y=yy, z=zz,
+        surfacecolor=zz,
+        opacity=0.85,
+        colorbar=dict(title="Activity Score")
+    ))
+
+    # Points
+    hover_text = []
+    for _, r in plot_df.iterrows():
+        vid = r.get("Plasmid_Variant_Index", "")
+        gen = r.get("Directed_Evolution_Generation", "")
+        score = r.get(score_col, np.nan)
+        mut = r.get("mutation_count", np.nan)
+        hover_text.append(
+            f"Variant {vid}<br>Gen {gen}<br>Score {float(score):.3f}<br>Mutations {mut}"
+        )
+
+    fig.add_trace(go.Scatter3d(
+        x=plot_df["Dim1"], y=plot_df["Dim2"], z=plot_df[score_col],
+        mode="markers",
+        marker=dict(size=3, opacity=0.7),
+        text=hover_text,
+        hoverinfo="text",
+        name="Variants"
+    ))
+
+    fig.update_layout(
+        title=title,
+        scene=dict(
+            xaxis_title="Sequence diversity (PCA Dim 1)",
+            yaxis_title="Sequence diversity (PCA Dim 2)",
+            zaxis_title="Activity Score"
+        ),
+        width=900,
+        height=650,
+        margin=dict(l=0, r=0, b=0, t=50)
+    )
+
+    if save_html:
+        if not save_html.endswith(".html"):
+            save_html += ".html"
+
+        fig.write_html(
+            save_html,
+            include_plotlyjs="cdn",   
+            full_html=True
+        )
+    
+
+    return fig
+
+##testing_codes##
+
+testing123 = variant_analysis("DE_BSU_Pol_Batch_1.tsv", best_orf)
+mutation_count_df = activity_scoring(testing123, baseline_mode = "generation")
+mutation_count_df
+
+qc_df = ensure_mutation_count(mutation_count_df)
+top10 = top_performers_table(qc_df, n=10)
+top10
+
+plot_activity_distribution_by_generation(
+    mutation_count_df,
+    score_col="Activity_Score",
+    exclude_controls=True,
+    kind="violin",      # or "box"
+    figsize=(10, 5)
+)
+
+fig = make_3d_activity_landscape(
+    mutation_count_df,
+    score_col="Activity_Score",
+    seq_col="protein_seq",
+    exclude_controls=True,
+    kmer_k=3
+)
+fig.show()

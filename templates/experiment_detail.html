@@ -12,10 +12,37 @@
 
 <hr>
 
-<p><em>Pipeline results will appear here.</em></p>
+{% if experiment.best_alignment_score %}
+    <h3>Validation Results</h3>
+
+    <p><strong>Best ORF Start Position:</strong> {{ experiment.best_orf_id }}</p>
+    <p><strong>Alignment Score:</strong> {{ experiment.best_alignment_score }}</p>
+
+    <p>
+        <strong>WT Protein Length:</strong>
+        {{ experiment.wt_protein_sequence|length if experiment.wt_protein_sequence else "N/A" }}
+        amino acids
+    </p>
+
+    <p>
+        <strong>UniProt Protein Length:</strong>
+        {{ experiment.uniprot_sequence|length if experiment.uniprot_sequence else "N/A" }}
+        amino acids
+    </p>
+{% else %}
+    <p><em>Validation has not been completed yet.</em></p>
+{% endif %}
 
 <hr>
 
+<br>
+
+<a href="{{ url_for('upload_experiment_data', experiment_id=experiment.id) }}">
+    Upload Experimental Data
+</a>
+
+<br>
+<br>
 <form method="POST" action="{{ url_for('run_validation', experiment_id=experiment.id) }}">
     <button type="submit">Run UniProt / Plasmid Validation</button>
 </form>

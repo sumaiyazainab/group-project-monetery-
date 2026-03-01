@@ -2,8 +2,7 @@
 #Importing necessary libraries and modules
 import os
 from flask import Flask, render_template, request, redirect, url_for
-from models import db, User
-from models import Experiment
+from models import db, User, Experiment, Variant
 from uniprot_fetch.staging.uniprot_fetch import fetch_uniprot_information, extract_uniprot_aa_sequence
 from Bio import Align
 from Bio.Align import substitution_matrices
@@ -15,6 +14,8 @@ from plasmid_validation.staging.plasmid_validation import (
 )
 from werkzeug.utils import secure_filename
 from fasta_parsing_orf.staging.fasta_parsing_orf import fasta_parsing, candidate_orf
+from staging.parser import parse_and_qc
+
 
 #Initialize the Flask application
 app = Flask(__name__)
@@ -29,6 +30,33 @@ app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 
 # Initialize the database with the Flask app
 db.init_app(app)
+
+#Adapter function to store variants from uploaded TSV/JSON file into the database, after parsing and quality control
+def store_variants_from_file(file_path, experiment_id):
+
+    clean_df, rejected_df = parse_and_qc(file_path)
+
+    accepted_count = 0
+    #Iterate through clean_df and store each variant in the database, linking it to the given experiment_id
+    for _, row in clean_df.iterrows():
+        
+        variant = Variant(
+            experiment_id=experiment_id,
+            variant_index=str(row["Plasmid_Variant_Index"]),
+            parent_variant_index=str(row["Parent_Plasmid_Variant"]),
+            generation=int(row["Directed_Evolution_Generation"]),
+            assembled_dna_sequence=row["Assembled_DNA_Sequence"],
+            dna_yield=float(row["DNA_Quantification_fg"]),
+            protein_yield=float(row["Protein_Quantification_pg"]),
+            metadata_json=row.to_dict()
+        )
+
+        db.session.add(variant)
+        accepted_count += 1
+
+    db.session.commit()
+
+    return accepted_count, len(rejected_df)
 
 #Creating a home page route
 @app.route("/")
@@ -137,18 +165,23 @@ def run_validation(experiment_id):
         record = fetch_uniprot_information(experiment.uniprot_accession)
         uniprot_seq = extract_uniprot_aa_sequence(record)
 
-        #Alignment + best ORF
+        experiment.uniprot_sequence = uniprot_seq
+
+        # Alignment + best ORF
         result = select_best_orf_by_alignment(orfs, uniprot_seq)
 
         if result["status"] == "match_found":
             experiment.status = "completed"
             experiment.best_orf_id = result.get("start_nt")
             experiment.best_alignment_score = result.get("alignment_score")
+
+            #Store WT protein sequence derived from plasmid
+            experiment.wt_protein_sequence = result.get("orf_aa")
+
             experiment.message = "Best ORF identified successfully"
         else:
             experiment.status = "failed"
             experiment.message = result.get("message", "No suitable ORF match found")
-
     
     except Exception as e:
         experiment.status = "failed"
@@ -157,7 +190,43 @@ def run_validation(experiment_id):
     db.session.commit()
     return redirect(url_for("experiment_detail", experiment_id=experiment.id))
 
- #Utility function to ensure a default user exists for testing purposes 
+#Creating a route to upload experimental data (TSV/JSON) for a specific experiment
+@app.route("/experiments/<int:experiment_id>/upload-data", methods=["GET", "POST"])
+def upload_experiment_data(experiment_id):
+
+    experiment = Experiment.query.get_or_404(experiment_id)
+
+    if request.method == "POST":
+
+        file = request.files["data_file"]
+
+        if not file:
+            experiment.message = "No file uploaded"
+            db.session.commit()
+            return redirect(url_for("experiment_detail", experiment_id=experiment.id))
+
+        filename = secure_filename(file.filename)
+        filepath = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+        file.save(filepath)
+
+        try:
+            accepted, rejected = store_variants_from_file(filepath, experiment.id)
+
+            experiment.status = "data_uploaded"
+            experiment.message = f"{accepted} variants accepted, {rejected} rejected"
+            db.session.commit()
+
+            return redirect(url_for("experiment_detail", experiment_id=experiment.id))
+
+        except Exception as e:
+            experiment.status = "failed"
+            experiment.message = str(e)
+            db.session.commit()
+            return redirect(url_for("experiment_detail", experiment_id=experiment.id))
+
+    return render_template("upload_data.html", experiment=experiment)
+
+#Utility function to ensure a default user exists for testing purposes 
 def ensure_default_user():
     user = User.query.first()
     if not user:

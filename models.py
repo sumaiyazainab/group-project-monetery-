@@ -1,5 +1,8 @@
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
+from sqlalchemy.dialects.sqlite import JSON
+
+
 
 db = SQLAlchemy()
 
@@ -39,5 +42,30 @@ class Experiment(db.Model):
 
     plasmid_fasta_path = db.Column(db.String(255), nullable=False)
 
+    uniprot_sequence = db.Column(db.Text)
+    wt_protein_sequence = db.Column(db.Text)
+
     def __repr__(self):
         return f"<Experiment {self.id}: {self.name}>"
+
+#Creating the Variant Table
+class Variant(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+
+    experiment_id = db.Column(
+        db.Integer,
+        db.ForeignKey("experiment.id"),
+        nullable=False
+    )
+
+    variant_index = db.Column(db.String, nullable=False)
+    parent_variant_index = db.Column(db.String)
+    generation = db.Column(db.Integer, nullable=False)
+
+    assembled_dna_sequence = db.Column(db.Text)
+    dna_yield = db.Column(db.Float)
+    protein_yield = db.Column(db.Float)
+
+    metadata_json = db.Column(JSON)
+
+    is_valid = db.Column(db.Boolean, default=True)

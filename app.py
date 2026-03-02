@@ -1,6 +1,8 @@
-#Web portal backend using Flask. This is a simple implementation to get us started, and will be expanded with more features and better security in the future.
+#Web portal backend using Flask. Handles user authentication, experiment management, file uploads, and integrates with analysis and parsing modules to process experimental data and display results.
 #Importing necessary libraries and modules
 import os
+import pandas as pd
+import logging
 from flask import Flask, render_template, request, redirect, url_for
 from models import db, User, Experiment, Variant
 from uniprot_fetch.staging.uniprot_fetch import fetch_uniprot_information, extract_uniprot_aa_sequence
@@ -15,7 +17,7 @@ from plasmid_validation.staging.plasmid_validation import (
 from werkzeug.utils import secure_filename
 from fasta_parsing_orf.staging.fasta_parsing_orf import fasta_parsing, candidate_orf
 from staging.parser import parse_and_qc
-
+from analysis.variant_analysis import variant_analysis, activity_scoring
 
 #Initialize the Flask application
 app = Flask(__name__)
@@ -57,6 +59,25 @@ def store_variants_from_file(file_path, experiment_id):
     db.session.commit()
 
     return accepted_count, len(rejected_df)
+
+def build_variant_dataframe(experiment):
+
+    rows = []
+
+    for v in experiment.variants:
+        rows.append({
+            "Plasmid_Variant_Index": v.variant_index,
+            "Parent_Plasmid_Variant": v.parent_variant_index,
+            "Directed_Evolution_Generation": v.generation,
+            "Assembled_DNA_Sequence": v.assembled_dna_sequence,
+            "DNA_Quantification_fg": v.dna_yield,
+            "Protein_Quantification_pg": v.protein_yield,
+            "Control": v.metadata_json.get("Control", False) if v.metadata_json else False
+        })
+
+    return pd.DataFrame(rows)
+
+#-------------------------------------------------------------------------------------------------------------------------------------
 
 #Creating a home page route
 @app.route("/")
@@ -177,6 +198,8 @@ def run_validation(experiment_id):
 
             #Store WT protein sequence derived from plasmid
             experiment.wt_protein_sequence = result.get("orf_aa")
+            #Store WT CDS sequence derived from plasmid
+            experiment.wt_cds_sequence = result.get("orf_nt")
 
             experiment.message = "Best ORF identified successfully"
         else:
@@ -225,6 +248,52 @@ def upload_experiment_data(experiment_id):
             return redirect(url_for("experiment_detail", experiment_id=experiment.id))
 
     return render_template("upload_data.html", experiment=experiment)
+
+#Creating a route to run variant analysis on the uploaded data for a specific experiment
+@app.route("/experiments/<int:experiment_id>/analyse", methods=["POST"])
+def analyse_experiment(experiment_id):
+
+    experiment = Experiment.query.get_or_404(experiment_id)
+
+    if not experiment.wt_cds_sequence:
+        experiment.message = "WT CDS not stored"
+        db.session.commit()
+        return redirect(url_for("experiment_detail", experiment_id=experiment.id))
+
+    df = build_variant_dataframe(experiment)
+
+    best_orf = {
+        "orf_nt": experiment.wt_cds_sequence,
+        "orf_aa": experiment.wt_protein_sequence
+    }
+
+    #Variant analysis
+    df_variant = variant_analysis(df, best_orf)
+
+    #Activity scoring
+    df_activity = activity_scoring(df_variant, baseline_mode="generation")
+
+    # Store results back into database
+    for _, row in df_activity.iterrows():
+
+        variant = Variant.query.filter_by(
+            experiment_id=experiment.id,
+            variant_index=row["Plasmid_Variant_Index"]
+        ).first()
+
+        variant.mutation_count = row["mutation_count"]
+        variant.synonymous = row["synonymous"]
+        variant.nonsynonymous = row["nonsynonymous"]
+        variant.truncating = row["truncating"]
+        variant.activity_score = row["Activity_Score"]
+
+    db.session.commit()
+
+    experiment.status = "Analysis Completed"
+    experiment.message = "Variant analysis and activity scoring complete"
+    db.session.commit()
+
+    return redirect(url_for("experiment_detail", experiment_id=experiment.id))    
 
 #Utility function to ensure a default user exists for testing purposes 
 def ensure_default_user():

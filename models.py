@@ -45,6 +45,10 @@ class Experiment(db.Model):
     uniprot_sequence = db.Column(db.Text)
     wt_protein_sequence = db.Column(db.Text)
 
+    wt_cds_sequence = db.Column(db.Text)
+    
+    variants = db.relationship('Variant', backref='experiment', lazy=True)
+    
     def __repr__(self):
         return f"<Experiment {self.id}: {self.name}>"
 
@@ -69,3 +73,9 @@ class Variant(db.Model):
     metadata_json = db.Column(JSON)
 
     is_valid = db.Column(db.Boolean, default=True)
+
+    mutation_count = db.Column(db.Integer)
+    synonymous = db.Column(db.Integer)
+    nonsynonymous = db.Column(db.Integer)
+    truncating = db.Column(db.Boolean)
+    activity_score = db.Column(db.Float)

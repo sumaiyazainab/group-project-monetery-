@@ -1,11 +1,123 @@
+
+# =========================
+# IMPORTS
+# =========================
+
 import pandas as pd
 import logging
 from Bio.Seq import Seq
+from typing import Optional, Set
 
-
-
-# ORF FINDING BY SEED
 # =========================
+# LOGGING
+# =========================
+
+#logging.basicConfig(
+    #filename="phase6.log",
+    #level=logging.INFO,
+    #format="%(asctime)s - %(levelname)s - %(message)s"
+#)
+
+# =========================
+# QUALITY CONTROL
+# =========================
+
+# Dictionary for compulsory columns in uploaded data
+ESSENTIAL_FIELDS = [
+    "Plasmid_Variant_Index",
+    "Parent_Plasmid_Variant",
+    "Directed_Evolution_Generation",
+    "Assembled_DNA_Sequence",
+    "DNA_Quantification_fg",
+    "Protein_Quantification_pg",
+    "Control"
+]
+
+
+def parse_file(file_path):
+    """
+    Load TSV or JSON file.
+
+    Separates I/O from biological logic for:
+    - reproducibility
+    - extensibility
+    - format-agnosticism
+
+    """
+    if file_path.endswith(".tsv"):
+        return pd.read_csv(file_path, sep="\t")
+    elif file_path.endswith(".json"):
+        return pd.read_json(file_path)
+    else:
+        raise ValueError("Unsupported file format")
+
+
+def run_quality_control(df):
+    """
+    Validate required columns and remove incomplete records.
+
+    Checks whether all columns listed in `ESSENTIAL_FIELDS`
+    are present in the input DataFrame. If any required columns are missing,
+    ValueError is raised. Then rows with missing values in any
+    required columns are removed.
+
+    Parameters
+    ----------
+    Input DataFrame to validate and clean.
+
+    Returns
+    -------
+    tuple
+        clean_df : DataFrame containing rows with all required fields present.
+        rejected_df : DataFrame containing rows dropped due to missing
+        values in required fields.
+
+    Raises
+    ------
+    ValueError
+        If one or more required columns defined in `ESSENTIAL_FIELDS`
+        are not present in the DataFrame.
+
+    """
+    missing = [c for c in ESSENTIAL_FIELDS if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing essential columns: {missing}")
+
+    clean_df = df.dropna(subset=ESSENTIAL_FIELDS)
+    rejected_df = df.loc[~df.index.isin(clean_df.index)]
+    return clean_df, rejected_df
+
+
+def parse_and_qc(file_path):
+    """
+    Parse file and apply quality control checks.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to the input file.
+
+    Returns
+    -------
+    DataFrame
+        Parsed and quality-controlled.
+
+    """
+    df = parse_file(file_path)
+    return run_quality_control(df)
+
+
+# In[10]:
+
+
+from Bio.Seq import Seq
+from Bio import pairwise2
+
+
+# The below box of code is to replace Ameerah's phase 6
+
+# In[11]:
+
 
 def best_approx_match_pos(seq, seed, max_mismatches=20):
     """
@@ -49,7 +161,27 @@ def best_approx_match_pos(seq, seed, max_mismatches=20):
     return None, best_mm
 
 
-def find_orf_by_seed(variant_seq, best_orf, seed_len=50, max_mismatches=20):
+def extract_cds_to_first_stop(circular_seq: str, start_pos: int, max_cds_nt: int = 20000) -> str:
+    """
+    Extract CDS from circular_seq starting at start_pos until first in-frame stop codon (inclusive).
+    Assumes start_pos is the first base of the start codon.
+    """
+    STOP_CODONS = {"TAA", "TAG", "TGA"}
+
+    # Ensure we have enough sequence to walk; circular_seq should already be doubled.
+    seq = circular_seq[start_pos:start_pos + max_cds_nt]
+
+    # Walk codons; include the stop codon in the returned CDS
+    for i in range(0, len(seq) - 2, 3):
+        codon = seq[i:i+3]
+        if codon in STOP_CODONS:
+            cds = seq[:i+3]
+            return cds
+
+    raise ValueError("No in-frame stop codon found within max_cds_nt")
+
+
+def find_orf_by_seed_and_stop(variant_seq, best_orf, seed_len=50, max_mismatches=20):
     """
     Identify open reading frame (ORF) in a circular plasmid sequence
     using a seed region from a reference (wild-type) ORF.
@@ -107,64 +239,155 @@ def find_orf_by_seed(variant_seq, best_orf, seed_len=50, max_mismatches=20):
         raise ValueError("Seed not found on either strand")
 
     if pos_r is not None and (pos_f is None or mm_r <= mm_f):
-        nt_seq = circular_rev_comp[pos_r:pos_r+len(wt_seq)]
+        start_pos = pos_r
+        use_seq = circular_rev_comp
     else:
-        nt_seq = circular[pos_f:pos_f+len(wt_seq)]
+        start_pos = pos_f
+        use_seq = circular
 
-    if len(nt_seq) % 3 != 0:
+    cds = extract_cds_to_first_stop(use_seq, start_pos)
+
+    if len(cds) % 3 != 0:
         raise ValueError("Extracted CDS not divisible by 3")
 
-    return nt_seq
+    return cds
 
 
-# =========================
-# MUTATION CLASSIFICATION
-# =========================
-
-def classify_mutations(wt_cds, var_cds):
-    """
-    Compare two coding sequences (CDS) at codon resolution and classify mutations.
-
-    Function translates both wild-type and variant CDS sequences and
-    iterates codon-by-codon to determine whether each nucleotide change
-    results in a synonymous (silent) or nonsynonymous (amino acid–altering)
-    mutation. It also checks for premature stop codons in the variant
-    protein sequence.
-
-    Parameters
-    ----------
-    wt_cds : str
-        Wild-type coding DNA sequence. Length must be divisible by 3.
-    var_cds : str
-        Variant coding DNA sequence aligned to the wild type and of equal length.
-
-    Returns
-    -------
-    tuple
-        total_mutations : int
-            Total number of codon changes.
-        synonymous_count : int
-            Number of synonymous (silent) mutations.
-        nonsynonymous_count : int
-            Number of nonsynonymous (amino acid–changing) mutations.
-        truncating : bool
-            True if a premature stop codon is detected in the variant
-            (excluding a terminal stop), otherwise False.
-
-    Notes
-    -----
-    Function assumes both sequences are in-frame and properly aligned.
+def translate_with_alt_start_with_stop(sequence: str, start_codons: Optional[Set[str]] = None) -> str:
 
     """
+    This function translates a string of DNA nucleotide sequence into amino acid sequence, including the stop codon, and forces
+    the first amino acid to M if the first codon is in start_codons (e.g. ATG, GTG, TTG).
+    :param sequence: DNA nucleotide sequence
+    :type sequence: str
+    :param start_codons: Set of codons treated as valid translation initiators. If None, defaults to common bacterial start codons {ATG, GTG, TTG}.
+    :type start_codons: set[str] or None
+    :return: protein amino acid sequence
+    :rtype: str
+    """
+
+    seq = sequence.upper()
+
+    # if user did not provide start_codons selection, use default start_codons
+    if start_codons is None:
+        start_codons = {"ATG", "GTG", "TTG"}
+
+    # using biopython translate module, translate sequence up until the stop codon - do not include *
+    aa_seq = str(Seq(seq).translate(to_stop=False))
+    first_codon = seq[:3]
+
+    # if the first_codon in aa_seq is in the selected start_codons, force the first codon into M for UniProt reference sequence alignment
+    if first_codon in start_codons and aa_seq:
+        aa_seq = "M" + aa_seq[1:]
+
+    return aa_seq
+
+def global_align_proteins(wt_prot: str, var_prot: str):
+    """
+    Returns one global alignment (best scoring) using Biopython PairwiseAligner.
+    """
+    aln = pairwise2.align.globalms(wt_prot, var_prot, 2, -1, -5, -1)[0]
+    wt_aln = aln.seqA
+    var_aln = aln.seqB
+    return wt_aln, var_aln
+
+
+def adding_gap(wt_aln, var_aln, var_nt_orf):
+    gap_pos_aa = []
+    wt_aa_i = 0  # counts non-gap WT residues seen so far
+
+    for i in range(len(wt_aln)):
+        a = wt_aln[i]
+        b = var_aln[i]
+
+        # If variant has a gap here, it's a deletion relative to WT.
+        # Insert '---' in var at the current WT amino-acid index.
+        if b == "-" and a != "-":
+            gap_pos_aa.append(wt_aa_i)
+
+        # advance WT residue index only when WT is not a gap
+        if a != "-":
+            wt_aa_i += 1
+
+    # adding --- back into nucleotide sequence
+    var_nt_gap = var_nt_orf
+
+    for aa_pos in sorted(gap_pos_aa, reverse=True):
+        nt_pos = aa_pos * 3
+        var_nt_gap = var_nt_gap[:nt_pos] + "---" + var_nt_gap[nt_pos:]
+
+    return gap_pos_aa, var_nt_gap
+
+def build_codon_aligned_cds(wt_aln: str, var_aln: str, wt_nt_orf: str, var_nt_orf: str):
+    """
+    Convert a gapped protein alignment (wt_aln/var_aln) into codon-aligned CDS strings.
+    Protein gap '-' becomes codon gap '---'.
+    """
+    wt_nt_orf = wt_nt_orf.upper()
+    var_nt_orf = var_nt_orf.upper()
+
+    if len(wt_aln) != len(var_aln):
+        raise ValueError("Protein alignments must have equal length")
+
+    if len(wt_nt_orf) % 3 != 0 or len(var_nt_orf) % 3 != 0:
+        raise ValueError("ORF nucleotide sequences must be divisible by 3")
+
+    wt_i = 0  # codon index in WT ORF
+    var_i = 0 # codon index in VAR ORF
+
+    wt_out = []
+    var_out = []
+
+    for a, b in zip(wt_aln, var_aln):
+        # WT side
+        if a == "-":
+            wt_out.append("---")
+        else:
+            wt_out.append(wt_nt_orf[wt_i*3: wt_i*3+3])
+            wt_i += 1
+
+        # VAR side
+        if b == "-":
+            var_out.append("---")
+        else:
+            var_out.append(var_nt_orf[var_i*3: var_i*3+3])
+            var_i += 1
+
+    wt_cds_gap = "".join(wt_out)
+    var_cds_gap = "".join(var_out)
+
+    if len(wt_cds_gap) != len(var_cds_gap):
+        raise ValueError("Internal error: gapped CDS lengths not equal (should never happen)")
+
+    return wt_cds_gap, var_cds_gap
+
+def classify_mutations_codon_aligned(wt_cds: str, var_cds: str):
+    wt_cds = wt_cds.upper()
+    var_cds = var_cds.upper()
+
+    if len(wt_cds) != len(var_cds):
+        raise ValueError("Codon-aligned CDS must have equal length")
+    if len(wt_cds) % 3 != 0:
+        raise ValueError("Aligned CDS length must be divisible by 3")
+
     syn = 0
     nonsyn = 0
+    insertions_aa = 0
+    deletions_aa = 0
     trunc = False
 
-    orf_aa = Seq(wt_cds).translate()
-    var_prot = Seq(var_cds).translate()
+    # truncation
+    # var_aln comes from previous step before alignment
+    var_nt_nogap = var_cds.replace("-", "")
+    if len(var_nt_nogap) % 3 != 0:
+        raise ValueError("Ungapped variant CDS not divisible by 3 (frameshift or bad gapping)")
 
-    if "*" in var_prot[:-1]:
-        trunc = True
+    var_prot = str(Seq(var_nt_nogap).translate(to_stop=False))
+
+
+    # Ignore terminal stop(s), flag only internal stops
+    var_prot_no_terminal_stop = var_prot.rstrip("*")
+    trunc = ("*" in var_prot_no_terminal_stop)
 
     for i in range(0, len(wt_cds), 3):
         wt_codon = wt_cds[i:i+3]
@@ -172,76 +395,28 @@ def classify_mutations(wt_cds, var_cds):
 
         if wt_codon == var_codon:
             continue
-
-        wt_aa = Seq(wt_codon).translate()
-        var_aa = Seq(var_codon).translate()
-
-        if wt_aa == var_aa:
-            syn += 1
-        else:
-            nonsyn += 1
-
-    return syn+nonsyn, syn, nonsyn, trunc
-
-
-
-# =========================
-# MUTATION LIST 
-# =========================
-
-def list_mutations(wt_cds, var_cds):
-    """
-    Generate amino acid–level mutation annotations between two CDS sequences.
-
-    Function compares wild-type and variant sequences codon-by-codon,
-    translates each codon, and records amino acid substitutions using
-    standard notation (e.g., "W1L" for Trp→Leu at position 1).
-
-    Parameters
-    ----------
-    wt_cds : str
-        Wild-type coding DNA sequence. Length must be divisible by 3.
-    var_cds : str
-        Variant coding DNA sequence aligned to wild type and of equal length.
-
-    Returns
-    -------
-    mutations : list of str
-        List of amino acid substitution annotations in the format:
-        "<WT_AA><position><VAR_AA>" (1-based indexing).
-    aa_positions : list of int
-        List of amino acid positions where mutations occur.
-
-    Notes
-    -----
-    Only codons that differ at the nucleotide level are evaluated.
-    Positions are reported using 1-based amino acid indexing.
-
-    """
-    muts = []
-    aa_positions = []
-    pos = 1
-
-    for i in range(0, len(wt_cds), 3):
-        wt_codon = wt_cds[i:i+3]
-        var_codon = var_cds[i:i+3]
-
+        if wt_codon == "---" and var_codon != "---":
+            insertions_aa += 1
+            continue
+        if wt_codon != "---" and var_codon == "---":
+            deletions_aa += 1
+            continue
         if wt_codon != var_codon:
             wt_aa = str(Seq(wt_codon).translate())
             var_aa = str(Seq(var_codon).translate())
-            muts.append(f"{wt_aa}{pos}{var_aa}")
-            aa_positions.append(pos)
+            if wt_aa == var_aa:
+                syn += 1
+            else:
+                nonsyn += 1
 
-        pos += 1
-
-    return muts, aa_positions
-
+    mutation_count = syn + nonsyn + insertions_aa + deletions_aa
+    return mutation_count, syn, nonsyn, trunc, insertions_aa, deletions_aa
 
 # =========================
-# PHASE 6 PIPELINE
+# PHASE 6 PIPELINE - updated
 # =========================
 
-def variant_analysis(df, best_orf):
+def variant_analysis(data_path, best_orf, seed_len=80, max_mismatches=8):
     """
     Execute the Phase 6 variant analysis pipeline.
 
@@ -291,52 +466,80 @@ def variant_analysis(df, best_orf):
 
 
     """
-    wt_row = df[df["Control"] == True].iloc[0]
 
+    if isinstance(data_path, pd.DataFrame):
+        df = data_path
+        rejected = pd.DataFrame()
+    else:
+        df, rejected = parse_and_qc(data_path)
+
+    # identity wt control is in row 1 - control parent plasmid
+    wt_row = df[df["Control"] == True].iloc[0]
     wt_plasmid = wt_row["Assembled_DNA_Sequence"]
 
-    wt_protein = best_orf["orf_aa"]
-
-    wt_nt = find_orf_by_seed(wt_plasmid, best_orf)
-
+    # extract the wt orf
+    wt_nt = find_orf_by_seed_and_stop(wt_plasmid, best_orf, seed_len=seed_len, max_mismatches=max_mismatches)
     if isinstance(wt_nt, dict):
         raise ValueError(f"WT ORF could not be found: {wt_nt}")
 
+    # translate wt_nt from extracted orf
+    wt_aa_seq = translate_with_alt_start_with_stop(wt_nt)
+
+    # find the variant sequence orf
     results = []
+    for row in df.itertuples():
+        #logging.info(f"Processing variant {row.Plasmid_Variant_Index}")
+        try:
+            var_plasmid = row.Assembled_DNA_Sequence
+            var_nt_orf = find_orf_by_seed_and_stop(var_plasmid, best_orf, seed_len=seed_len, max_mismatches=max_mismatches)
 
-    for _, row in df.iterrows():
+            # translate
+            var_aa_seq = translate_with_alt_start_with_stop(var_nt_orf)
 
-        logging.info(f"Processing variant {row['Plasmid_Variant_Index']}")
+            # protein alignment
+            wt_aln, var_aln = global_align_proteins(wt_aa_seq, var_aa_seq)
 
-        var_nt = find_orf_by_seed(row["Assembled_DNA_Sequence"], best_orf)
+            # build codon-aligned CDS
+            wt_cds_gap, var_cds_gap = build_codon_aligned_cds(wt_aln, var_aln, wt_nt, var_nt_orf)
 
-        if isinstance(var_nt, dict):
-            logging.warning(
-                f"ORF not found for variant {row['Plasmid_Variant_Index']}: {var_nt}"
-            )
-            continue
+            # classify mutations (including possible indels)
+            mutation_count, syn, nonsyn, trunc, insertions_aa, deletions_aa = classify_mutations_codon_aligned(wt_cds_gap, var_cds_gap)
 
-        var_prot = str(Seq(var_nt).translate(to_stop=False))
-
-        total, syn, nonsyn, trunc = classify_mutations(wt_nt, var_nt)
-
-        mut_list, aa_positions = list_mutations(wt_nt, var_nt)
-
-        results.append({
-            "protein_seq": var_prot,
-            "mutations": mut_list,
-            "aa_positions": aa_positions,
-            "mutation_count": total,
+            results.append({
+            "protein_seq": var_aa_seq,
+            "mutation_count": mutation_count,
             "synonymous": syn,
             "nonsynonymous": nonsyn,
+            "insertions": insertions_aa,
+            "deletions": deletions_aa,
             "truncating": trunc
         })
 
-    result_df = pd.concat([df.reset_index(drop=True),
-                            pd.DataFrame(results)], axis=1)
+        except Exception as e:
+            print(f"Variant {row.Plasmid_Variant_Index} failed: {e}")
+            
+            results.append({
+            "protein_seq": None,
+            "mutation_count": None,
+            "synonymous": None,
+            "nonsynonymous": None,
+            "insertions": None,
+            "deletions": None,
+            "truncating": None,
+            "error": str(e)
+            })
 
+    # merge results
+    result_df = pd.concat([df.reset_index(drop=True),
+                            pd.DataFrame(results).reset_index(drop=True)], axis=1)
 
     return result_df
+
+
+
+# In[12]:
+
+
 # ===========================
 # PHASE 7 — ACTIVITY SCORING
 # ===========================
@@ -585,6 +788,5 @@ def activity_scoring(df, baseline_mode="global"):
     df = compute_raw_activity(df)
 
     df = compute_activity_score(df, baseline_mode)
-
 
     return df

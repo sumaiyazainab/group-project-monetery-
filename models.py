@@ -48,7 +48,7 @@ class Experiment(db.Model):
     wt_cds_sequence = db.Column(db.Text)
     
     variants = db.relationship('Variant', backref='experiment', lazy=True)
-    
+
     def __repr__(self):
         return f"<Experiment {self.id}: {self.name}>"
 
@@ -79,3 +79,7 @@ class Variant(db.Model):
     nonsynonymous = db.Column(db.Integer)
     truncating = db.Column(db.Boolean)
     activity_score = db.Column(db.Float)
+    
+    insertions = db.Column(db.Integer)
+    deletions = db.Column(db.Integer)
+    protein_seq = db.Column(db.Text)

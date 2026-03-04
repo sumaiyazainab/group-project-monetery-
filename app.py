@@ -8,16 +8,14 @@ from models import db, User, Experiment, Variant
 from uniprot_fetch.staging.uniprot_fetch import fetch_uniprot_information, extract_uniprot_aa_sequence
 from Bio import Align
 from Bio.Align import substitution_matrices
-from plasmid_validation.staging.plasmid_validation import (
-    filter_orf_length,
-    make_protein_aligner_blosum62,
-    length_compatibility,
-    select_best_orf_by_alignment
-)
+from plasmid_validation.staging.plasmid_validation import filter_orf_length, make_protein_aligner_blosum62, length_compatibility, select_best_orf_by_alignment
 from werkzeug.utils import secure_filename
 from fasta_parsing_orf.staging.fasta_parsing_orf import fasta_parsing, candidate_orf
 from staging.parser import parse_and_qc
 from analysis.variant_analysis import variant_analysis, activity_scoring
+from Bio.Seq import Seq
+
+#------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 #Initialize the Flask application
 app = Flask(__name__)
@@ -64,7 +62,10 @@ def build_variant_dataframe(experiment):
 
     rows = []
 
+    #variants = Variant.query.filter_by(experiment_id=experiment.id).all()
+
     for v in experiment.variants:
+
         rows.append({
             "Plasmid_Variant_Index": v.variant_index,
             "Parent_Plasmid_Variant": v.parent_variant_index,
@@ -134,7 +135,7 @@ def create_experiment():
             uniprot_accession=request.form["uniprot_accession"],
             plasmid_fasta_path=filepath,
             start_codon=start_codon,
-            status="pending",
+            status="Pending",
             message="Experiment created"
         )
 
@@ -163,7 +164,7 @@ def run_validation(experiment_id):
     experiment = Experiment.query.get_or_404(experiment_id)
 
     try:
-        experiment.status = "running"
+        experiment.status = "Running"
         experiment.message = "Parsing plasmid FASTA..."
         db.session.commit()
 
@@ -203,11 +204,11 @@ def run_validation(experiment_id):
 
             experiment.message = "Best ORF identified successfully"
         else:
-            experiment.status = "failed"
+            experiment.status = "Analysis Failed"
             experiment.message = result.get("message", "No suitable ORF match found")
     
     except Exception as e:
-        experiment.status = "failed"
+        experiment.status = "Analysis Failed"
         experiment.message = str(e)
 
     db.session.commit()
@@ -235,14 +236,14 @@ def upload_experiment_data(experiment_id):
         try:
             accepted, rejected = store_variants_from_file(filepath, experiment.id)
 
-            experiment.status = "data_uploaded"
-            experiment.message = f"{accepted} variants accepted, {rejected} rejected"
+            experiment.status = "Data Uploaded"
+            experiment.message = f"{accepted} Variants Accepted, {rejected} Variants Rejected"
             db.session.commit()
 
             return redirect(url_for("experiment_detail", experiment_id=experiment.id))
 
         except Exception as e:
-            experiment.status = "failed"
+            experiment.status = "Analysis Failed"
             experiment.message = str(e)
             db.session.commit()
             return redirect(url_for("experiment_detail", experiment_id=experiment.id))
@@ -254,46 +255,64 @@ def upload_experiment_data(experiment_id):
 def analyse_experiment(experiment_id):
 
     experiment = Experiment.query.get_or_404(experiment_id)
-
-    if not experiment.wt_cds_sequence:
-        experiment.message = "WT CDS not stored"
-        db.session.commit()
+    
+    #If analysis has already been completed, skip re-analysis and just redirect to experiment detail page
+    if experiment.status == "Analysis Complete":
         return redirect(url_for("experiment_detail", experiment_id=experiment.id))
 
-    df = build_variant_dataframe(experiment)
+    try:
+        #Build best ORF dict for analysis functions using WT CDS and protein sequences derived from plasmid.
+        wt_nt = experiment.wt_cds_sequence
 
-    best_orf = {
-        "orf_nt": experiment.wt_cds_sequence,
-        "orf_aa": experiment.wt_protein_sequence
-    }
+        best_orf = {
+            "orf_nt": wt_nt,
+            "orf_aa": str(Seq(wt_nt).translate())
+        }
 
-    #Variant analysis
-    df_variant = variant_analysis(df, best_orf)
+        #Build dataframe from variants stored in the database for this experiment, to be used as input for analysis functions
+        df = build_variant_dataframe(experiment)
 
-    #Activity scoring
-    df_activity = activity_scoring(df_variant, baseline_mode="generation")
+        #Run variant analysis functions
+        df = variant_analysis(df, best_orf)
 
-    # Store results back into database
-    for _, row in df_activity.iterrows():
+        #Run activity scoring function
+        df = activity_scoring(df)
 
-        variant = Variant.query.filter_by(
-            experiment_id=experiment.id,
-            variant_index=row["Plasmid_Variant_Index"]
-        ).first()
+        #Save results back to database
+        for _, row in df.iterrows():
 
-        variant.mutation_count = row["mutation_count"]
-        variant.synonymous = row["synonymous"]
-        variant.nonsynonymous = row["nonsynonymous"]
-        variant.truncating = row["truncating"]
-        variant.activity_score = row["Activity_Score"]
+            variant = Variant.query.filter_by(
+                experiment_id=experiment.id,
+                variant_index=row["Plasmid_Variant_Index"]
+            ).first()
 
-    db.session.commit()
+            if variant:
 
-    experiment.status = "Analysis Completed"
-    experiment.message = "Variant analysis and activity scoring complete"
-    db.session.commit()
+                variant.mutation_count = int(row["mutation_count"])
+                variant.synonymous = int(row["synonymous"])
+                variant.nonsynonymous = int(row["nonsynonymous"])
+                variant.truncating = bool(row["truncating"])
+                variant.activity_score = float(row["Activity_Score"])
 
-    return redirect(url_for("experiment_detail", experiment_id=experiment.id))    
+        db.session.commit()
+
+        experiment.status = "Analysis Complete"
+        experiment.message = "Analysis Completed Successfully"
+
+        db.session.commit()
+
+        return redirect(url_for("experiment_detail", experiment_id=experiment.id))
+
+    except Exception as e:
+
+        experiment.status = "Analysis Failed"
+        experiment.message = str(e)
+
+        db.session.commit()
+
+        return redirect(url_for("experiment_detail", experiment_id=experiment.id))   
+ 
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 #Utility function to ensure a default user exists for testing purposes 
 def ensure_default_user():

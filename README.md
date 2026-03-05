@@ -21,7 +21,7 @@ The resulting dataset links sequence variation with experimental activity measur
 
 ### Pipeline Workflow
 
-Input dataset -> Quality Control -> ORF Identification -> DNA → Protein Translation -> Protein Alignment (WT vs Variant) -> Mutation Annotation --> Variant Analysis -> Activity Scoring -> Annotated Output Dataset
+Input dataset -> Quality Control -> ORF Identification -> DNA → Protein Translation -> Protein Alignment (WT vs Variant) -> Mutation Annotation -> Variant Analysis -> Activity Scoring -> Annotated Output Dataset
 
 ### Key Features
 

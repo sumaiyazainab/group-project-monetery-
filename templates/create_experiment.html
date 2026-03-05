@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2>Create New Experiment</h2>
+
+<form method="POST" enctype="multipart/form-data">
+
+    <label for="name">Experiment Name</label><br>
+    <input type="text" id="name" name="name" required><br><br>
+
+    <label for="uniprot_accession">UniProt Accession ID</label><br>
+    <input
+      type="text"
+      name="uniprot_accession"
+      placeholder="e.g. P05067"
+      required
+    ><br><br>
+    
+    <label>Plasmid FASTA</label>
+    <input type="file" name="plasmid_fasta" accept=".fasta,.fa" required>
+    <br><br>
+
+    <p><strong>Start Codon (optional)</strong></p>
+
+    <input type="radio" id="atg" name="start_codon" value="ATG">
+    <label for="atg">ATG</label><br>
+
+    <input type="radio" id="gtg" name="start_codon" value="GTG">
+    <label for="gtg">GTG</label><br>
+
+    <input type="radio" id="ttg" name="start_codon" value="TTG">
+    <label for="ttg">TTG</label><br><br>
+
+    <small>If no option is selected, default start codon logic will be used.</small><br><br>
+
+    <button type="submit">Create Experiment</button>
+</form>
+
+{% endblock %}

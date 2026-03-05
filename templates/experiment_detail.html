@@ -14,13 +14,29 @@
 
 {% if experiment.best_alignment_score %}
     <h3>Validation Results</h3>
-    <p><strong>Best ORF Start Position:</strong> {{ experiment.best_orf_id }}</p>
-    <p><strong>Alignment Score:</strong> {{ experiment.best_alignment_score }}</p>
-    <p><strong>WT Protein Length:</strong>
-       {{ experiment.wt_protein_sequence|length if experiment.wt_protein_sequence else "N/A" }} amino acids
+    <p><strong>Alignment Score:</strong> {{ "%.2f"|format(experiment.best_alignment_score) }}</p>
+    <p><strong>Alignment Fraction:</strong> {{ "%.0f"|format(experiment.alignment_score_fraction * 100) }}%</p>
+    <p><strong>Match Status:</strong> {{ experiment.alignment_match_status }}</p>
+
+    <h4>Best ORF Metadata</h4>
+
+    <p><strong>Strand:</strong> {{ experiment.best_orf_strand }}</p>
+    <p><strong>Frame:</strong> {{ experiment.best_orf_frame }}</p>
+    <p><strong>Start (nt):</strong> {{ experiment.best_orf_start }}</p>
+    <p><strong>End (nt):</strong> {{ experiment.best_orf_end }}</p>
+    <p><strong>Wraps Origin:</strong> {{ experiment.best_orf_wraps_origin }}</p>
+    <p><strong>Length (aa):</strong> {{ experiment.best_orf_length }}</p>
+
+    <p>
+    <strong>WT Protein Length:</strong>
+    {{ experiment.wt_protein_sequence|length if experiment.wt_protein_sequence else "N/A" }}
+    aa
     </p>
-    <p><strong>UniProt Protein Length:</strong>
-       {{ experiment.uniprot_sequence|length if experiment.uniprot_sequence else "N/A" }} amino acids
+
+    <p>
+    <strong>UniProt Protein Length:</strong>
+    {{ experiment.uniprot_sequence|length if experiment.uniprot_sequence else "N/A" }}
+    aa
     </p>
 {% else %}
     <p><em>Validation has not been completed yet.</em></p>
@@ -28,17 +44,19 @@
 
 <hr>
 
-<br>
-
-<a href="{{ url_for('upload_experiment_data', experiment_id=experiment.id) }}">
-    Upload Experimental Data
-</a>
 
 <br><br>
 
 <form method="POST" action="{{ url_for('run_validation', experiment_id=experiment.id) }}">
     <button type="submit">Run UniProt / Plasmid Validation</button>
 </form>
+
+<br>
+
+<a href="{{ url_for('upload_experiment_data', experiment_id=experiment.id) }}">
+    Upload Experimental Data
+</a>
+
 
 <br><br>
 

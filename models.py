@@ -42,8 +42,23 @@ class Experiment(db.Model):
     status = db.Column(db.String(20), default='pending')
     message = db.Column(db.Text, nullable=True)
 
+    #orf information
     best_orf_id = db.Column(db.Integer, nullable=True)
     best_alignment_score = db.Column(db.Float, nullable=True)
+    alignment_score_fraction = db.Column(db.Float, nullable=True)
+    alignment_match_status = db.Column(db.String(20), nullable=True)
+
+    best_orf_strand = db.Column(db.String(1), nullable=True)
+    best_orf_frame = db.Column(db.Integer, nullable=True)
+    best_orf_start = db.Column(db.Integer, nullable=True)
+    best_orf_end = db.Column(db.Integer, nullable=True)
+    best_orf_wraps_origin = db.Column(db.Boolean, nullable=True)
+
+    best_orf_length = db.Column(db.Integer, nullable=True)
+
+    best_orf_nt_sequence = db.Column(db.Text, nullable=True)
+    best_orf_aa_sequence = db.Column(db.Text, nullable=True)
+    #
 
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
@@ -53,14 +68,13 @@ class Experiment(db.Model):
 
     uniprot_sequence = db.Column(db.Text)
     wt_protein_sequence = db.Column(db.Text)
-
     wt_cds_sequence = db.Column(db.Text)
     
     variants = db.relationship('Variant', backref='experiment', lazy=True)
 
     activity_plot = db.Column(db.String)
     landscape_plot = db.Column(db.String)
-
+    
     def __repr__(self):
         return f"<Experiment {self.id}: {self.name}>"
 

@@ -267,21 +267,51 @@ def run_validation(experiment_id):
 
         # Alignment + best ORF
         result = select_best_orf_by_alignment(orfs, uniprot_seq)
+        print(result)
 
         if result["status"] == "match_found":
             experiment.status = "completed"
             experiment.best_orf_id = result.get("start_nt")
-            experiment.best_alignment_score = result.get("alignment_score")
-
+            
             #Store WT protein sequence derived from plasmid
             experiment.wt_protein_sequence = result.get("orf_aa")
             #Store WT CDS sequence derived from plasmid
             experiment.wt_cds_sequence = result.get("orf_nt")
 
-            experiment.message = "Best ORF identified successfully"
+            raw_score = result.get("alignment_score")
+
+# --- Compute normalized score fraction ---
+            wt_length = len(experiment.wt_protein_sequence) if experiment.wt_protein_sequence else 1
+
+# Normalized fraction: perfect alignment = 1.0
+            alignment_fraction = raw_score / wt_length if raw_score else 0.0
+            alignment_fraction = min(alignment_fraction, 1.0)  # cap at 1.0
+
+# --- Store normalized score in database ---
+            experiment.best_alignment_score = 1.0  # show 1.0 for the best ORF
+            experiment.alignment_score_fraction = alignment_fraction
+
+# --- Human-readable match status ---
+            status_map = {
+                "match_found": "Match Found",
+                "no_match": "No Match Found"
+            }
+            experiment.alignment_match_status = status_map.get(result.get("status"), "Unknown")
+
+            experiment.best_orf_strand = result.get("strand")
+            experiment.best_orf_frame = result.get("frame")
+            experiment.best_orf_start = result.get("start_nt")  #check
+            experiment.best_orf_end = result.get("end_nt")      #check
+            experiment.best_orf_wraps_origin = result.get("wraps_origin")
+            experiment.best_orf_length = result.get("length_aa")  #check
+            experiment.best_orf_nt_sequence = result.get("orf_nt")
+            experiment.best_orf_aa_sequence = result.get("orf_aa")
+            
+
+            experiment.message = "Validation succesful, move on to data upload and analysis"
         else:
-            experiment.status = "Analysis Failed"
-            experiment.message = result.get("message", "No suitable ORF match found")
+            experiment.status = "No match found"
+            experiment.message = result.get("message", "No suitable match found, double-check your FASTA file and UniProt accession")
     
     except Exception as e:
         experiment.status = "Analysis Failed"

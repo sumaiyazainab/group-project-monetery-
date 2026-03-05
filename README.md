@@ -57,7 +57,7 @@ The pipeline identifies mutations by:
 - Performing global alignment with the wild-type protein
 - Annotating differences using standard mutation notation
 
-  *Example mutations annotations:*
+  *Example mutation annotations:*
 - *T599S*
 - *A600del*
 - *ins601G*

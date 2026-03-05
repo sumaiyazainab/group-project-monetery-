@@ -151,17 +151,20 @@ Additional columns include:
 pip install -r requirements.txt
 
 *requirements.txt*
+
 pandas==2.3.3
 biopython==1.86
 
 ### Software Environment
 
 *Tested with:*
+
 Python 3.12.12
 pandas 2.3.3
 biopython 1.86
 
 *Standard library modules used:*
+
 logging
 sys
 

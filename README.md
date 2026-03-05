@@ -2,7 +2,7 @@
 MSc Bioinformatics Software Development Group Project 2026
 
 ## Variant Analysis and Activity Scoring
-#### *Final script - starryeyed6.md/starryeyed6.py*
+#### *Final script - starryeyed6.py*
 
 Python pipelines for mutation detection and activity scoring in directed evolution variant libraries.
 

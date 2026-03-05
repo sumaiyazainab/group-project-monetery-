@@ -8,11 +8,8 @@ Full technical documentation and user manual are available at [link or "submitte
 ## Installation and Setup
 1. Clone the repository
 2. Install dependencies: `pip install -r requirements.txt`
-3. Initialise the database: `python create_db.py`
-4. Run the application: `flask run`
-
-## Repository Structure
-
+3. Run the application: `flask run`
+4. Open your browser and navigate to: http://127.0.0.1:5000
 
 ## Team members
 WONG Yui Ching Janice,

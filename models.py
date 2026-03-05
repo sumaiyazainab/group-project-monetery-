@@ -109,3 +109,21 @@ class Variant(db.Model):
     insertions = db.Column(db.Integer)
     deletions = db.Column(db.Integer)
     protein_seq = db.Column(db.Text)
+
+#Creating the ProteinFeature Table 
+class ProteinFeature(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    
+    experiment_id = db.Column(db.Integer, db.ForeignKey('experiment.id'), nullable=False)
+    
+    description = db.Column(db.String(255), nullable=False)
+    start_pos = db.Column(db.Integer, nullable=False)
+    end_pos = db.Column(db.Integer, nullable=False)
+    
+    experiment = db.relationship(
+        'Experiment',
+        backref=db.backref('protein_features', lazy=True)
+    )
+
+    def __repr__(self):
+        return f"<ProteinFeature {self.description} ({self.start_pos}-{self.end_pos})>"

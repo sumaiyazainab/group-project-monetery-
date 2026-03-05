@@ -27,17 +27,30 @@
     <p><strong>Wraps Origin:</strong> {{ experiment.best_orf_wraps_origin }}</p>
     <p><strong>Length (aa):</strong> {{ experiment.best_orf_length }}</p>
 
-    <p>
-    <strong>WT Protein Length:</strong>
-    {{ experiment.wt_protein_sequence|length if experiment.wt_protein_sequence else "N/A" }}
-    aa
-    </p>
+    <p><strong>WT Protein Length:</strong> {{ experiment.wt_protein_sequence|length if experiment.wt_protein_sequence else "N/A" }} aa</p>
+    <p><strong>UniProt Protein Length:</strong> {{ experiment.uniprot_sequence|length if experiment.uniprot_sequence else "N/A" }} aa</p>
+    
+     <!-- Protein Features Table -->
+    {% if experiment.protein_features %}
+        <h4>Protein Features</h4>
+        <table border="1">
+            <tr>
+                <th>Description</th>
+                <th>Start</th>
+                <th>End</th>
+            </tr>
+            {% for feat in experiment.protein_features %}
+            <tr>
+                <td>{{ feat.description }}</td>
+                <td>{{ feat.start_pos }}</td>
+                <td>{{ feat.end_pos }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    {% else %}
+        <p><em>No protein features found.</em></p>
+    {% endif %}
 
-    <p>
-    <strong>UniProt Protein Length:</strong>
-    {{ experiment.uniprot_sequence|length if experiment.uniprot_sequence else "N/A" }}
-    aa
-    </p>
 {% else %}
     <p><em>Validation has not been completed yet.</em></p>
 {% endif %}
@@ -75,16 +88,24 @@
                 <th>Rank</th>
                 <th>Variant</th>
                 <th>Generation</th>
+                <th>Control</th>
                 <th>Activity Score</th>
                 <th>Mutations</th>
+                <th>Synonymous</th>
+                <th>Non-Synonymous</th>
+                <th>Truncating</th>
             </tr>
             {% for _, row in top_table.iterrows() %}
             <tr>
                 <td>{{ row.Rank }}</td>
                 <td>{{ row.Plasmid_Variant_Index }}</td>
                 <td>{{ row.Directed_Evolution_Generation }}</td>
+                <td>{{ row.Control_Type }}</td>
                 <td>{{ row.Activity_Score }}</td>
                 <td>{{ row.mutation_count }}</td>
+                <td>{{ row.synonymous }}</td>
+                <td>{{ row.nonsynonymous }}</td>
+                <td>{{ row.truncating }}</td>  
             </tr>
             {% endfor %}
         </table>

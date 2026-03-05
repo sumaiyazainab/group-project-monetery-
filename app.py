@@ -4,7 +4,7 @@ import os
 import pandas as pd
 import logging
 from flask import Flask, render_template, request, redirect, url_for
-from models import db, User, Experiment, Variant
+from models import db, User, Experiment, Variant, ProteinFeature
 from uniprot_fetch.staging.uniprot_fetch import fetch_uniprot_information, extract_uniprot_aa_sequence
 from Bio import Align
 from Bio.Align import substitution_matrices
@@ -259,15 +259,40 @@ def run_validation(experiment_id):
         experiment.message = f"{len(orfs)} ORFs found. Fetching UniProt..."
         db.session.commit()
 
-        #Fetch UniProt protein
+        
+        #Fetch UniProt information
         record = fetch_uniprot_information(experiment.uniprot_accession)
         uniprot_seq = extract_uniprot_aa_sequence(record)
-
         experiment.uniprot_sequence = uniprot_seq
+        
+        ProteinFeature.query.filter_by(experiment_id=experiment.id).delete()
 
+        for f in record.get("features", []):
+            try:
+                start = f.get("start")
+                end = f.get("end")
+                description = f.get("description", "")
+
+                # Skip features that are missing start or end
+                if start is None or end is None:
+                    continue
+
+                pf = ProteinFeature(
+                    experiment_id=experiment.id,
+                    description=description,
+                    start_pos=int(start),
+                    end_pos=int(end)
+                )
+                db.session.add(pf)
+            except Exception as e:
+                # Skip this feature and log
+                print(f"Skipping protein feature due to error: {e}")
+
+        db.session.commit()
+    
         # Alignment + best ORF
         result = select_best_orf_by_alignment(orfs, uniprot_seq)
-        print(result)
+        
 
         if result["status"] == "match_found":
             experiment.status = "completed"
@@ -280,18 +305,14 @@ def run_validation(experiment_id):
 
             raw_score = result.get("alignment_score")
 
-# --- Compute normalized score fraction ---
             wt_length = len(experiment.wt_protein_sequence) if experiment.wt_protein_sequence else 1
 
-# Normalized fraction: perfect alignment = 1.0
             alignment_fraction = raw_score / wt_length if raw_score else 0.0
             alignment_fraction = min(alignment_fraction, 1.0)  # cap at 1.0
 
-# --- Store normalized score in database ---
             experiment.best_alignment_score = 1.0  # show 1.0 for the best ORF
             experiment.alignment_score_fraction = alignment_fraction
 
-# --- Human-readable match status ---
             status_map = {
                 "match_found": "Match Found",
                 "no_match": "No Match Found"
@@ -300,10 +321,10 @@ def run_validation(experiment_id):
 
             experiment.best_orf_strand = result.get("strand")
             experiment.best_orf_frame = result.get("frame")
-            experiment.best_orf_start = result.get("start_nt")  #check
-            experiment.best_orf_end = result.get("end_nt")      #check
+            experiment.best_orf_start = result.get("start_nt")  
+            experiment.best_orf_end = result.get("end_nt")      
             experiment.best_orf_wraps_origin = result.get("wraps_origin")
-            experiment.best_orf_length = result.get("length_aa")  #check
+            experiment.best_orf_length = result.get("length_aa") 
             experiment.best_orf_nt_sequence = result.get("orf_nt")
             experiment.best_orf_aa_sequence = result.get("orf_aa")
             

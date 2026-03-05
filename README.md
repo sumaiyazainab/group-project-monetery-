@@ -119,6 +119,7 @@ Raw Activity = DNA_Quantification / Protein_Quantification
 
 **Normalised activity score**
 Activity Score =
+
     Raw Activity_variant
     --------------------
       Raw Activity_WT
@@ -178,9 +179,8 @@ pip install -r requirements.txt
 - biopython 1.86
 
 *Standard library modules used:*
-
-logging
-sys
+- logging
+- sys
 
 Sequence alignment uses Biopython's PairwiseAligner API
 

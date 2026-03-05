@@ -126,7 +126,7 @@ Additional columns include:
 
 pip install -r requirements.txt
 
-**requirements.txt*
+*requirements.txt*
 - pandas==2.3.3
 - biopython==1.86
 

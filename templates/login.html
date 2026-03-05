@@ -5,21 +5,19 @@
 {% block content %}
     <h2>Login</h2>
 
-    <form method="post">
-        <div>
-            <label for="username">Username</label><br>
-            <input type="text" id="username" name="username" required>
-        </div>
+    <form method="POST">
+        <label>User</label><br>
+        <input type="text" name="username" required><br><br>
 
-        <br>
-
-        <div>
-            <label for="password">Password</label><br>
-            <input type="password" id="password" name="password" required>
-        </div>
-
-        <br>
+        <label>Password</label><br>
+        <input type="password" name="password" required><br><br>
 
         <button type="submit">Login</button>
+</form>
+
+<p>
+Don't have an account?
+<a href="{{ url_for('register') }}">Register here</a>
+</p>
     </form>
 {% endblock %}

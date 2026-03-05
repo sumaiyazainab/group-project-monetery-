@@ -14,7 +14,7 @@
         }
 
         header {
-            background-color: #1f2933;
+            background-color: #2c2e2f;
             color: white;
             padding: 1rem 2rem;
         }
@@ -44,8 +44,11 @@
 <header>
     <nav>
         <a href="/">Home</a>
-        <a href="/login">Login</a>
-        <a href="/register">Register</a>
+        <!-- <a href="/login">Login</a> -->
+        <!--<a href="/register">Register</a>-->
+        <a href="{{ url_for('home_dashboard') }}">Dashboard</a>
+        <a href="{{ url_for('list_experiments') }}">Experiments</a>
+        <a href="{{ url_for('logout') }}">Logout</a>
     </nav>
 </header>
 

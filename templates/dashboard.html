@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+
+{% block title %}Home | Direct Evolution Monitoring{% endblock %}
+
+{% block content %}
+<h1>Dashboard</h1>
+
+<p>Welcome {{ current_user.username }}</p>
+
+<a href="{{ url_for('create_experiment') }}">
+<button>Create New Experiment</button>
+</a>
+
+<a href="{{ url_for('list_experiments') }}">
+<button>View Experiments</button>
+</a>
+
+<a href="{{ url_for('logout') }}">
+<button>Logout</button>
+</a>
+{% endblock %}

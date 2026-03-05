@@ -1,13 +1,14 @@
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 from sqlalchemy.dialects.sqlite import JSON
-
+from werkzeug.security import generate_password_hash, check_password_hash
+from flask_login import UserMixin
 
 
 db = SQLAlchemy()
 
 #Creating the User Table
-class User(db.Model):
+class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
 
     username = db.Column(db.String(80), unique=True, nullable=False)
@@ -16,6 +17,14 @@ class User(db.Model):
     password_hash = db.Column(db.String(256), nullable=False)
 
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    experiments = db.relationship('Experiment', backref='user', lazy=True)
+
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
 
     def __repr__(self):
         return f"<User {self.username}>"
@@ -48,6 +57,9 @@ class Experiment(db.Model):
     wt_cds_sequence = db.Column(db.Text)
     
     variants = db.relationship('Variant', backref='experiment', lazy=True)
+
+    activity_plot = db.Column(db.String)
+    landscape_plot = db.Column(db.String)
 
     def __repr__(self):
         return f"<Experiment {self.id}: {self.name}>"

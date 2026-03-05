@@ -14,6 +14,8 @@ from fasta_parsing_orf.staging.fasta_parsing_orf import fasta_parsing, candidate
 from staging.parser import parse_and_qc
 from analysis.variant_analysis import variant_analysis, activity_scoring
 from Bio.Seq import Seq
+from analysis.visualisation import top_performers_table, plot_activity_distribution_by_generation, make_3d_activity_landscape
+from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 
 #------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -23,6 +25,7 @@ app = Flask(__name__)
 # Temporary database (for easy development)
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///app.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["SECRET_KEY"] = "dev-secret-key"
 
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -30,6 +33,15 @@ app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 
 # Initialize the database with the Flask app
 db.init_app(app)
+# Initialize Flask-Login
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = "login"
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
 
 #Adapter function to store variants from uploaded TSV/JSON file into the database, after parsing and quality control
 def store_variants_from_file(file_path, experiment_id):
@@ -85,9 +97,29 @@ def build_variant_dataframe(experiment):
 def home():
     return render_template("home.html")
 
+#Creating a dashboard route
+@app.route("/home")
+@login_required
+def home_dashboard():
+    return render_template("dashboard.html")    
+
 #Creating a user login route
 @app.route("/login", methods=["GET", "POST"])
 def login():
+
+    if request.method == "POST":
+
+        username = request.form["username"]
+        password = request.form["password"]
+
+        user = User.query.filter_by(username=username).first()
+
+        if user and user.check_password(password):
+            login_user(user)
+            return redirect(url_for("home_dashboard"))
+
+        return "Invalid username or password"
+
     return render_template("login.html")
 
 #Creating a user registration route
@@ -98,12 +130,15 @@ def register():
         email = request.form["email"]
         password = request.form["password"]
 
-        # TEMPORARY: store raw password (hash later)
+        # Check if username or email already exists
+        #if User.query.filter((User.username == username) | (User.email == email)).first():
+            #return render_template("register.html", error="Username or email already exists")
         new_user = User(
             username=username,
-            email=email,
-            password_hash=password
+            email=email
         )
+        
+        new_user.set_password(password)
 
         db.session.add(new_user)
         db.session.commit()
@@ -112,12 +147,20 @@ def register():
 
     return render_template("register.html")
 
+#Creating a user logout route
+@app.route("/logout")
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for("login"))
+
 #Creating a new experiment route
 @app.route("/experiments/new", methods=["GET", "POST"])
+@login_required
 def create_experiment():
     if request.method == "POST":
         name = request.form["name"]
-        start_codon = request.form.get("start_codon")  # returns None if not selected
+        start_codon = request.form.get("start_codon")  #returns None if not selected
         
         #Temporary user assignment (we will implement proper user sessions later)
         user = User.query.first()
@@ -130,7 +173,7 @@ def create_experiment():
 
         # Experiment creation
         experiment = Experiment(
-            user_id=user.id,   # TEMP: using current_user.id, but we will implement proper user sessions later
+            user_id=current_user.id,   #Assign experiment to the currently logged-in user
             name=name,
             uniprot_accession=request.form["uniprot_accession"],
             plasmid_fasta_path=filepath,
@@ -148,15 +191,48 @@ def create_experiment():
 
 #Creating a route to list all experiments
 @app.route("/experiments")
+@login_required
 def list_experiments():
-    experiments = Experiment.query.order_by(Experiment.created_at.desc()).all()
+    experiments = Experiment.query.filter_by(user_id=current_user.id).order_by(Experiment.created_at.desc()).all()
     return render_template("experiments.html", experiments=experiments)
 
 #Creating a route to view experiment details
 @app.route("/experiments/<int:experiment_id>")
+@login_required
 def experiment_detail(experiment_id):
     experiment = Experiment.query.get_or_404(experiment_id)
-    return render_template("experiment_detail.html", experiment=experiment)
+
+    top_table = None
+    if experiment.status == "Analysis Complete":
+        import pandas as pd
+        from analysis.visualisation import top_performers_table
+
+        variant_data = []
+        for v in experiment.variants:
+            variant_data.append({
+                "Plasmid_Variant_Index": v.variant_index or "",
+                "Parent_Plasmid_Variant": getattr(v, "parent_plasmid_variant", ""),
+                "Directed_Evolution_Generation": getattr(v, "generation", 0),
+                "DNA_Quantification_fg": getattr(v, "dna_yield", 0),
+                "Protein_Quantification_pg": getattr(v, "protein_yield", 0),
+                "Control": getattr(v, "control", False),
+                "mutation_count": v.mutation_count or 0,
+                "synonymous": v.synonymous or 0,
+                "nonsynonymous": v.nonsynonymous or 0,
+                "truncating": v.truncating or False,
+                "Activity_Score": v.activity_score or 0,
+            })
+
+        df = pd.DataFrame(variant_data)
+
+        if not df.empty and df['Activity_Score'].notna().any():
+            top_table = top_performers_table(df, n=10)
+
+    return render_template(
+        "experiment_detail.html",
+        experiment=experiment,
+        top_table=top_table
+    )
 
 #Creating a route to run validation (placeholder for now)
 @app.route("/experiments/<int:experiment_id>/validate", methods=["POST"])
@@ -278,6 +354,29 @@ def analyse_experiment(experiment_id):
         #Run activity scoring function
         df = activity_scoring(df)
 
+        #Visualisation
+
+        plot_dir = f"static/plots/experiment_{experiment.id}"
+        os.makedirs(plot_dir, exist_ok=True)
+
+        # Top performers table
+        top_table = top_performers_table(df)
+
+        # Activity distribution
+        activity_plot_path = plot_activity_distribution_by_generation(
+            df,
+            save_path=f"{plot_dir}/activity_distribution.png"
+        ) 
+
+        # 3D landscape
+        landscape_path = f"{plot_dir}/activity_landscape.html"
+
+        make_3d_activity_landscape(
+            df,
+            save_html=landscape_path
+        )
+
+
         #Save results back to database
         for _, row in df.iterrows():
 
@@ -291,13 +390,16 @@ def analyse_experiment(experiment_id):
                 variant.mutation_count = int(row["mutation_count"])
                 variant.synonymous = int(row["synonymous"])
                 variant.nonsynonymous = int(row["nonsynonymous"])
-                variant.truncating = bool(row["truncating"])
+                variant.truncating = bool(int(row["truncating"]))
                 variant.activity_score = float(row["Activity_Score"])
 
         db.session.commit()
 
         experiment.status = "Analysis Complete"
         experiment.message = "Analysis Completed Successfully"
+        
+        experiment.activity_plot = activity_plot_path
+        experiment.landscape_plot = landscape_path
 
         db.session.commit()
 

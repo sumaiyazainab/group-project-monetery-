@@ -13,8 +13,8 @@
 
 </p>
 
-<a href="{{ url_for('create_experiment') }}">Create New Experiment</a><br>
-<a href="{{ url_for('list_experiments') }}">View Experiments</a>
+<!--<a href="{{ url_for('create_experiment') }}">Create New Experiment</a><br>
+<a href="{{ url_for('list_experiments') }}">View Experiments</a>-->
 
 <section style="margin-top: 2rem;">
     <h2>What you can do</h2>
@@ -24,4 +24,8 @@
         <li>Visualise trends and results</li>
     </ul>
 </section>
+
+<a href="{{ url_for('login') }}">
+    <button>Login / Register</button>
+</a>
 {% endblock %}

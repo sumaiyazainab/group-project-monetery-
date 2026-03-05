@@ -14,20 +14,13 @@
 
 {% if experiment.best_alignment_score %}
     <h3>Validation Results</h3>
-
     <p><strong>Best ORF Start Position:</strong> {{ experiment.best_orf_id }}</p>
     <p><strong>Alignment Score:</strong> {{ experiment.best_alignment_score }}</p>
-
-    <p>
-        <strong>WT Protein Length:</strong>
-        {{ experiment.wt_protein_sequence|length if experiment.wt_protein_sequence else "N/A" }}
-        amino acids
+    <p><strong>WT Protein Length:</strong>
+       {{ experiment.wt_protein_sequence|length if experiment.wt_protein_sequence else "N/A" }} amino acids
     </p>
-
-    <p>
-        <strong>UniProt Protein Length:</strong>
-        {{ experiment.uniprot_sequence|length if experiment.uniprot_sequence else "N/A" }}
-        amino acids
+    <p><strong>UniProt Protein Length:</strong>
+       {{ experiment.uniprot_sequence|length if experiment.uniprot_sequence else "N/A" }} amino acids
     </p>
 {% else %}
     <p><em>Validation has not been completed yet.</em></p>
@@ -41,44 +34,97 @@
     Upload Experimental Data
 </a>
 
-<br>
-<br>
+<br><br>
+
 <form method="POST" action="{{ url_for('run_validation', experiment_id=experiment.id) }}">
     <button type="submit">Run UniProt / Plasmid Validation</button>
 </form>
 
-<br>
-<br>
+<br><br>
+
 <form method="POST" action="{{ url_for('analyse_experiment', experiment_id=experiment.id) }}">
     <button type="submit">Run Full Analysis</button>
 </form>
 
 {% if experiment.status == "Analysis Complete" %}
-<h3>Variant Results</h3>
+    <br>
 
-<table border="1">
-    <tr>
-        <th>Variant</th>
-        <th>Mutations</th>
-        <th>Syn</th>
-        <th>NonSyn</th>
-        <th>Trunc</th>
-        <th>Activity</th>
-    </tr>
+    <!-- Top 10 Table -->
+    <h3>Top Performing Variants</h3>
+    {% if top_table is not none and not top_table.empty %}
+        <table border="1">
+            <tr>
+                <th>Rank</th>
+                <th>Variant</th>
+                <th>Generation</th>
+                <th>Activity Score</th>
+                <th>Mutations</th>
+            </tr>
+            {% for _, row in top_table.iterrows() %}
+            <tr>
+                <td>{{ row.Rank }}</td>
+                <td>{{ row.Plasmid_Variant_Index }}</td>
+                <td>{{ row.Directed_Evolution_Generation }}</td>
+                <td>{{ row.Activity_Score }}</td>
+                <td>{{ row.mutation_count }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    {% endif %}
 
-    {% for v in experiment.variants %}
-    <tr>
-        <td>{{ v.variant_index }}</td>
-        <td>{{ v.mutation_count }}</td>
-        <td>{{ v.synonymous }}</td>
-        <td>{{ v.nonsynonymous }}</td>
-        <td>{{ v.truncating }}</td>
-        <td>{{ "%.3f"|format(v.activity_score) if v.activity_score else "—" }}</td>
-    </tr>
-    {% endfor %}
-</table>
+    <hr>
+
+    <!-- Analysis Visualisations -->
+    <h2>Analysis Visualisations</h2>
+    <br>
+
+    <h3>Activity Distribution by Generation</h3>
+    {% if experiment.activity_plot %}
+        <img src="{{ url_for('static', filename=experiment.activity_plot.split('static/')[1]) }}" style="max-width:100%;">
+    {% endif %}
+    <br>
+
+    <h3>3D Activity Landscape</h3>
+    {% if experiment.landscape_plot %}
+        <iframe
+            src="{{ url_for('static', filename=experiment.landscape_plot.split('static/')[1]) }}"
+            width="100%"
+            height="750"
+            frameborder="0">
+        </iframe>
+    {% endif %}
+
+    <br>
+
+    <!-- Collapsible Full Variant Table -->
+    <details>
+        <summary><strong>Show Full Variant Dataset</strong></summary>
+        <br>
+        <table border="1">
+            <tr>
+                <th>Variant</th>
+                <th>Mutations</th>
+                <th>Syn</th>
+                <th>NonSyn</th>
+                <th>Trunc</th>
+                <th>Activity</th>
+            </tr>
+            {% for v in experiment.variants %}
+            <tr>
+                <td>{{ v.variant_index }}</td>
+                <td>{{ v.mutation_count }}</td>
+                <td>{{ v.synonymous }}</td>
+                <td>{{ v.nonsynonymous }}</td>
+                <td>{{ v.truncating }}</td>
+                <td>{{ "%.3f"|format(v.activity_score) if v.activity_score else "—" }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    </details>
+
+    <br>
 {% endif %}
 
-<br>
 <a href="{{ url_for('list_experiments') }}">Back to Experiments</a>
+
 {% endblock %}

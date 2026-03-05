@@ -15,11 +15,11 @@ Full technical documentation and user manual are available at [link or "submitte
 
 
 ## Team members
-WONG, Yui Ching Janice
-ZAINAB, Sumaiya
-AMUSHAN, Ameerah
-BIDAVE, Tejaswini
-DAN-ABIA, Joy
+WONG Yui Ching Janice,
+ZAINAB Sumaiya,
+AMUSHAN Ameerah,
+BIDAVE Tejaswini,
+DAN-ABIA Joy
 =
 
 **'df' in activity_scoring() should be output of variant_analysis() pipeline*

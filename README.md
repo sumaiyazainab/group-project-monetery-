@@ -22,29 +22,45 @@ The resulting dataset links sequence variation with experimental activity measur
 ### Pipeline Workflow
 
 Input dataset
+
     │
     ▼
+    
 Quality Control
+
     │
     ▼
+    
 ORF Identification
+
     │
     ▼
+    
 DNA → Protein Translation
+
     │
     ▼
+    
 Protein Alignment (WT vs Variant)
+
     │
     ▼
+    
 Mutation Annotation
+
     │
     ▼
+    
 Variant Analysis
+
     │
     ▼
+    
 Activity Scoring
+
     │
     ▼
+    
 Annotated Output Dataset
 
 
@@ -151,17 +167,15 @@ Additional columns include:
 pip install -r requirements.txt
 
 *requirements.txt*
-
-pandas==2.3.3
-biopython==1.86
+- pandas==2.3.3
+- biopython==1.86
 
 ### Software Environment
 
 *Tested with:*
-
-Python 3.12.12
-pandas 2.3.3
-biopython 1.86
+- Python 3.12.12
+- pandas 2.3.3
+- biopython 1.86
 
 *Standard library modules used:*
 

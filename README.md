@@ -2,7 +2,7 @@
 MSc Bioinformatics Software Development Group Project 2026
 
 ## Variant Analysis and Activity Scoring
-#### Final script - starryeyed6.md/starryeyed6.py
+#### *Final script - starryeyed6.md/starryeyed6.py*
 
 Python pipelines for mutation detection and activity scoring in directed evolution variant libraries.
 
@@ -151,6 +151,6 @@ variant_analysis("input_dataset.tsv", best_orf)
 Then compute activity scores:
 activity_scoring(df, baseline_mode="global")
 
-*input dataset can be either .tsv or .json*
-*'df' in activity_scoring() should be output of variant_analysis() pipeline*
-*'baseline_mode' can be either 'global' or 'generation'*
+- *input dataset can be either .tsv or .json*
+- *'df' in activity_scoring() should be output of variant_analysis() pipeline*
+- *'baseline_mode' can be either 'global' or 'generation'*
